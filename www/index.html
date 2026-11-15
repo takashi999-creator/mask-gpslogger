@@ -231,7 +231,7 @@ const FS = NATIVE ? plugin("Filesystem") : null;
 const SHARE = NATIVE ? plugin("Share") : null;
 const NOTIF = NATIVE ? plugin("LocalNotifications") : null;
 
-let watchId = null, bgWatcher = null, recording = false, lastPos = null, selected = null, wakeLock = null, wxCache = null, shot = null, gpsErr = false;
+let fgWatch = null, bgWatcher = null, recording = false, lastPos = null, selected = null, wakeLock = null, wxCache = null, shot = null, gpsErr = false;
 let uid = Math.max(Date.now(), ...state.points.map(p => p.id || 0));
 const enrichJobs = new Map(), pastWx = new Map(), placeCache = new Map();
 const view = {day:"", place:"", media:false};   // 絞り込み：日付・場所・写真音声あり
@@ -712,7 +712,7 @@ async function start(){
   if(recording) return;
   banner("");
   if(NATIVE && BG){
-    recording = true; setRecUI();
+    recording = true; setRecUI(); dropFg();
     try{ if(NOTIF) await NOTIF.requestPermissions(); }catch(e){}
     const s = state.settings;
     try{
@@ -732,32 +732,49 @@ async function start(){
   } else {
     if(!("geolocation" in navigator)){ banner("このブラウザは位置情報に対応していません。"); return; }
     recording = true; setRecUI();
-    watchId = navigator.geolocation.watchPosition(onPos, onErr, {enableHighAccuracy:true, maximumAge:0, timeout:30000});
+    ensureFg();
+    if(lastPos && Date.now() - lastPos.t < 20000) onFix({...lastPos, t:Date.now()});   // すでに現在地が分かっていれば、すぐ1点目を記録
   }
   $("gpsText").textContent = "GPS 測位中…";
   requestWake();
 }
 function stop(){
   recording = false;
-  if(watchId != null){ navigator.geolocation.clearWatch(watchId); watchId = null; }
   if(bgWatcher != null && BG){ BG.removeWatcher({id:bgWatcher}).catch(() => {}); bgWatcher = null; }
   setRecUI();
-  $("gps").className = ""; $("gpsText").textContent = "GPS 待機中";
+  if(document.visibilityState === "visible") ensureFg(); else dropFg();
+  if(fgWatch == null){ $("gps").className = ""; $("gpsText").textContent = "GPS 待機中"; }
   if(wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
 }
+/* 画面を開いている間は現在地を取り続ける。「今ここを記録」がすぐ反応し、許可の確認も起動時に済む */
+function ensureFg(){
+  if(fgWatch != null || !("geolocation" in navigator) || (NATIVE && recording) || (!NATIVE && !window.isSecureContext)) return;
+  fgWatch = navigator.geolocation.watchPosition(onPos, e => { if(recording || e.code === 1) onErr(e); if(e.code === 1) dropFg(); },
+    {enableHighAccuracy:true, maximumAge:0, timeout:30000});
+}
+function dropFg(){ if(fgWatch != null){ navigator.geolocation.clearWatch(fgWatch); fgWatch = null; } }
+/* ブラウザは止まっている間は位置を知らせてこないので、時間の条件はこちらで見る */
+setInterval(() => {
+  if(!recording || NATIVE || !lastPos) return;
+  const now = Date.now();
+  if(now - lastPos.t > 5000 && now - lastPos.t < 180000) onFix({...lastPos, t:now});
+}, 5000);
 function setRecUI(){ $("toggle").textContent = recording ? "記録を止める" : "記録を始める"; $("toggle").classList.toggle("rec", recording); }
 async function requestWake(){
   if(recording && state.settings.wake && "wakeLock" in navigator && document.visibilityState === "visible"){
     try{ wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
   }
 }
-document.addEventListener("visibilitychange", () => { if(document.visibilityState === "visible"){ requestWake(); backfill(); drawAll(false); } });
+document.addEventListener("visibilitychange", () => {
+  if(document.visibilityState === "visible"){ ensureFg(); requestWake(); backfill(); drawAll(false); }
+  else if(!(recording && !NATIVE)) dropFg();
+});
 window.addEventListener("online", backfill);
 $("toggle").onclick = () => recording ? stop() : start();
 
 function markPoint(){
   return new Promise(res => {
-    if(lastPos && Date.now() - lastPos.t < 15000){ const p = addPoint({...lastPos, t:Date.now()}, true); select(p.id); return res(p); }
+    if(lastPos && Date.now() - lastPos.t < 20000){ const p = addPoint({...lastPos, t:Date.now()}, true); select(p.id); return res(p); }
     if(!("geolocation" in navigator)){ banner("この環境は位置情報に対応していません。"); return res(null); }
     $("gpsText").textContent = "GPS 測位中…";
     navigator.geolocation.getCurrentPosition(g => {
@@ -767,8 +784,11 @@ function markPoint(){
   });
 }
 $("mark").onclick = () => {
-  const pp = markPoint();
-  if(state.settings.markCam){ shot = pp; $("photoIn").click(); }   // カメラは押した瞬間に開く。測位と天気は撮影中に進む
+  if(!state.settings.markCam){ markPoint(); return; }
+  // カメラは押した瞬間に開く。測位と天気は撮影中に進む。
+  // 現在地が新しければ先に地点を作り、古ければカメラを先に開いてから測位する（アプリ版で許可の確認が重ならないように）
+  if(lastPos && Date.now() - lastPos.t < 20000){ shot = markPoint(); $("photoIn").click(); }
+  else { $("photoIn").click(); shot = markPoint(); }
 };
 
 /* ---------- 一覧と詳細の操作 ---------- */
@@ -957,6 +977,7 @@ $("envNote").textContent = NATIVE
 if(!NATIVE && !window.isSecureContext) banner("このページは https で開かないと現在地・カメラ・マイクを使えません。地図や記録の閲覧はできます。");
 if(!NATIVE && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("sw.js").catch(() => {});
 if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+ensureFg();
 backfill();
 </script>
 </body>
