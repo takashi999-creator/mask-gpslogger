@@ -95,6 +95,9 @@ h2 span{font-family:var(--mono);letter-spacing:0}
 #profile{width:100%;height:64px;display:block;background:var(--card);border:1px solid var(--line);border-radius:10px}
 
 .day{font-family:var(--mono);font-size:12px;color:var(--muted);padding:4px 2px 0}
+.day i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.arrow{background:none;border:0}
+.legend{font-size:11px;font-weight:400;letter-spacing:0;font-family:var(--display)}
 .entry{display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;padding:9px 12px;text-align:left;width:100%;border-left:4px solid var(--pine)}
 .entry.manual{border-left-color:var(--signal)}
 .entry .t{font-family:var(--mono);font-size:13px;color:var(--muted);grid-row:1/3;align-self:center}
@@ -200,7 +203,7 @@ h2 span{font-family:var(--mono);letter-spacing:0}
   <h2>標高の変化 <span id="pRange"></span></h2>
   <canvas id="profile" width="600" height="128" aria-label="標高の変化グラフ"></canvas>
 
-  <h2>記録</h2>
+  <h2>記録 <span class="legend">線の色＝日付　点線＝記録が途切れた区間</span></h2>
   <div id="list"></div>
 </main>
 </div>
@@ -406,15 +409,36 @@ const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZo
 gsi.addTo(map);
 L.control.layers({"地理院地図":gsi, "航空写真":photo, "OpenStreetMap":osm}, null, {position:"topright"}).addTo(map);
 L.control.zoom({position:"bottomright"}).addTo(map);
-const track = L.polyline([], {color:"#e2622b", weight:4, opacity:.85}).addTo(map);
+const tracks = L.layerGroup().addTo(map), arrows = L.layerGroup().addTo(map);
+const DAY_COLORS = ["#e2622b", "#2f6f9f", "#8a4fbf", "#c2255c", "#0b7a75", "#9c6b12", "#3b5bdb"];   // 日付ごとの線の色
+let dayColorMap = new Map(), drawnSegs = [];
+const dayColor = t => dayColorMap.get(dayKey(t)) || DAY_COLORS[0];
+/* 記録が途切れた区間か：時間が大きく空き、かつ離れている */
+function isGap(a, b){
+  const s = state.settings;
+  return (b.t - a.t) / 1000 > Math.max(s.interval * 3, 300) && haversine(a, b) > Math.max(s.dist * 2, 200);
+}
 const dots = L.layerGroup().addTo(map);
 const here = L.circleMarker([0,0], {radius:8, color:"#fff", weight:3, fillColor:"#2f6f9f", fillOpacity:1, interactive:false});
 const hereAcc = L.circle([0,0], {radius:1, color:"#2f6f9f", weight:1, fillOpacity:.12, interactive:false});
 
 function drawMap(fit){
   const vis = visible();
-  track.setLatLngs(splitDays(vis).map(seg => seg.map(p => [p.lat, p.lon])));
-  dots.clearLayers();
+  dayColorMap = new Map([...new Set(state.points.map(p => dayKey(p.t)))].sort().map((d, i) => [d, DAY_COLORS[i % DAY_COLORS.length]]));
+  tracks.clearLayers(); dots.clearLayers();
+  drawnSegs = splitDays(vis);
+  for(const seg of drawnSegs){
+    const color = dayColor(seg[0].t);
+    let run = [seg[0]], gap = null;
+    const flush = () => { if(run.length > 1) L.polyline(run.map(p => [p.lat, p.lon]),
+      gap ? {color, weight:3, opacity:.75, dashArray:"4 9", interactive:false} : {color, weight:4, opacity:.9, interactive:false}).addTo(tracks); };
+    for(let i = 1; i < seg.length; i++){
+      const g = isGap(seg[i-1], seg[i]);
+      if(gap !== null && g !== gap){ flush(); run = [seg[i-1]]; }
+      gap = g; run.push(seg[i]);
+    }
+    flush();
+  }
   vis.forEach(p => {
     const sel = p.id === selected, has = p.media && p.media.length;
     L.circleMarker([p.lat, p.lon], {radius: sel ? 10 : has ? 7 : 5, color: has ? "#ffd166" : "#fff", weight: has ? 3 : 2,
@@ -425,7 +449,28 @@ function drawMap(fit){
     if(vis.length === 1) map.setView([vis[0].lat, vis[0].lon], 15);
     else map.fitBounds(L.latLngBounds(vis.map(p => [p.lat, p.lon])), {padding:[28,28], maxZoom:16});
   }
+  drawArrows();
 }
+/* 進んだ方向の矢印。画面上で間隔が詰まりすぎないように間引く */
+function drawArrows(){
+  arrows.clearLayers();
+  for(const seg of drawnSegs){
+    const color = dayColor(seg[0].t);
+    let since = 999;
+    for(let i = 1; i < seg.length; i++){
+      const a = map.latLngToLayerPoint([seg[i-1].lat, seg[i-1].lon]), b = map.latLngToLayerPoint([seg[i].lat, seg[i].lon]);
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      since += len;
+      if(len < 26 || since < 70) continue;
+      since = 0;
+      const deg = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+      const mid = map.layerPointToLatLng([(a.x + b.x) / 2, (a.y + b.y) / 2]);
+      L.marker(mid, {interactive:false, keyboard:false, icon:L.divIcon({className:"arrow", iconSize:[16,16], iconAnchor:[8,8],
+        html:`<svg viewBox="0 0 16 16" width="16" height="16" style="transform:rotate(${deg.toFixed(1)}deg)"><path d="M3 2.5 13 8 3 13.5 5.5 8z" fill="${color}" stroke="#fff" stroke-width="1.2" stroke-linejoin="round"/></svg>`})}).addTo(arrows);
+    }
+  }
+}
+map.on("zoomend", drawArrows);
 
 /* ---------- 表示 ---------- */
 function totalDist(pts){
@@ -480,7 +525,7 @@ function drawList(){
   let html = "", day = "";
   vis.slice().reverse().forEach(p => {
     const d = ymd(p.t);
-    if(d !== day){ day = d; html += `<div class="day">${esc(d)}</div>`; }
+    if(d !== day){ day = d; html += `<div class="day"><i style="background:${dayColor(p.t)}"></i>${esc(d)}</div>`; }
     html += `<button class="entry${p.manual ? " manual" : ""}" data-id="${p.id}">
       <span class="t">${hm(p.t)}</span>
       <span class="a">${esc(p.note || (p.manual ? "手動で記録" : "自動記録"))}</span>
