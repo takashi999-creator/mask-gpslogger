@@ -1,0 +1,17 @@
+{
+  "name": "MASK.GPSLOGGER",
+  "short_name": "GPSLOGGER",
+  "description": "条件を決めて地点を記録し、標高・天気・写真・音を残すGPSロガー",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#16302b",
+  "theme_color": "#16302b",
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}

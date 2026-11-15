@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#16302b">
+<title>MASK.GPSLOGGER</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<style>
+/* layout: 地図を上、計器盤のような数値列、下に記録の帳面。野帳(フィールドノート)の方眼と等高線の色 */
+:root{
+  --paper:#eef2ee; --card:#ffffff; --ink:#16302b; --muted:#5d726c;
+  --line:#cfd9d4; --pine:#1f5a4c; --signal:#e2622b; --sky:#2f6f9f;
+  --display:"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP","Yu Gothic",sans-serif;
+  --mono:"DM Mono",ui-monospace,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --paper:#0f1c19; --card:#172925; --ink:#e4ece8; --muted:#8fa69f;
+    --line:#2a403a; --pine:#6fc3ab; --signal:#ff8a55; --sky:#7db8e0;
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--paper);color:var(--ink);font-family:var(--display);font-size:15px;line-height:1.6;display:flex;flex-direction:column;-webkit-tap-highlight-color:transparent}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;background:#16302b;color:#eef2ee}
+header h1{font-family:var(--mono);font-size:16px;margin:0;font-weight:500;letter-spacing:.06em}
+header h1 b{color:#ff8a55;font-weight:500}
+#gps{font-size:12px;display:flex;align-items:center;gap:6px;opacity:.92}
+#gps i{width:9px;height:9px;border-radius:50%;background:#8a9a95;display:inline-block}
+#gps.on i{background:#58d68d;box-shadow:0 0 0 4px rgba(88,214,141,.25)}
+#gps.err i{background:#ff8a55}
+
+#banner{display:none;background:var(--signal);color:#fff;padding:8px 16px;font-size:13px}
+#banner.show{display:block}
+
+.app{flex:1;min-height:0;display:flex;flex-direction:column}
+.side{flex:1;min-height:0;display:flex;flex-direction:column}
+#map{flex:0 0 38%;min-height:200px;background:var(--line);z-index:0}
+@media (min-width:900px){
+  .app{flex-direction:row}
+  #map{flex:1;min-height:0}
+  .side{flex:0 0 460px;border-left:1px solid var(--line)}
+}
+.filters{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.filters label{display:flex;flex-direction:column;gap:2px;font-size:11px;color:var(--muted);min-width:0}
+.filters select{border:1px solid var(--line);background:var(--paper);border-radius:6px;padding:6px 6px;font-size:14px;width:100%}
+.filters .check{grid-column:1/-1;flex-direction:row;align-items:center;gap:8px;font-size:13px;color:var(--ink)}
+.gal{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px;padding:4px 12px 12px}
+.gal button{border:1px solid var(--line);background:var(--paper);border-radius:8px;padding:0;overflow:hidden;aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-family:var(--mono);font-size:11px;color:var(--muted);position:relative}
+.gal img{width:100%;height:100%;object-fit:cover;display:block}
+.gal button span{position:absolute;left:0;right:0;bottom:0;background:rgba(10,24,21,.7);color:#eef4f1;padding:1px 4px;text-align:left}
+.gal button.au{font-size:12px}.gal button.au b{font-size:24px;color:var(--pine);font-weight:500}.gal button.au span{position:static;background:none;color:var(--muted);text-align:center}
+#galCount{font-family:var(--mono);font-weight:400;color:var(--muted);font-size:12px}
+
+.gauges{display:grid;grid-template-columns:repeat(4,1fr);background:var(--card);border-bottom:1px solid var(--line)}
+.gauges div{padding:7px 4px;text-align:center;border-right:1px solid var(--line)}
+.gauges div:last-child{border-right:0}
+.gauges b{display:block;font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:17px;font-weight:500}
+.gauges span{font-size:11px;color:var(--muted)}
+
+.controls{display:flex;gap:8px;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--line)}
+.btn{border:1px solid var(--line);background:var(--card);border-radius:8px;padding:9px 12px;font-weight:500}
+.btn.main{flex:1;background:var(--pine);border-color:var(--pine);color:var(--paper);font-weight:700;font-size:16px}
+.btn.main.rec{background:var(--signal);border-color:var(--signal);color:#fff}
+.btn.small{padding:6px 10px;font-size:13px}
+.btn.live{background:var(--signal);border-color:var(--signal);color:#fff}
+
+main{flex:1;overflow-y:auto;padding:12px 16px 32px;display:flex;flex-direction:column;gap:12px;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:24px 24px;background-position:-1px -1px}
+details,.sheet,.entry{background:var(--card);border:1px solid var(--line);border-radius:10px}
+details summary{padding:10px 14px;font-weight:700;cursor:pointer}
+.form{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;padding:4px 14px 14px}
+.form label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}
+.form input,.form select{border:1px solid var(--line);background:var(--paper);border-radius:6px;padding:7px 8px;font-size:15px;width:100%}
+.form .wide{grid-column:1/-1}
+.form .check{flex-direction:row;align-items:center;gap:8px;font-size:14px;color:var(--ink)}
+.form .check input{width:auto}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+
+h2{font-size:13px;margin:6px 0 0;color:var(--muted);letter-spacing:.1em;display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+h2 span{font-family:var(--mono);letter-spacing:0}
+#profile{width:100%;height:64px;display:block;background:var(--card);border:1px solid var(--line);border-radius:10px}
+
+.day{font-family:var(--mono);font-size:12px;color:var(--muted);padding:4px 2px 0}
+.entry{display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;padding:9px 12px;text-align:left;width:100%;border-left:4px solid var(--pine)}
+.entry.manual{border-left-color:var(--signal)}
+.entry .t{font-family:var(--mono);font-size:13px;color:var(--muted);grid-row:1/3;align-self:center}
+.entry .a{font-weight:500;overflow-wrap:anywhere}
+.entry .w{font-size:12.5px;color:var(--muted);grid-column:2}
+.entry .e{font-family:var(--mono);grid-row:1/3;grid-column:3;align-self:center}
+.empty{background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:16px;color:var(--muted)}
+
+.sheet{padding:14px;border-color:var(--pine);border-width:2px}
+.sheet h3{margin:0 0 8px;font-size:15px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.kv{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 12px;margin:0 0 10px}
+.kv div{border-bottom:1px dotted var(--line);padding-bottom:3px}
+.kv dt{font-size:11px;color:var(--muted)}
+.kv dd{margin:0;font-family:var(--mono);font-size:14px}
+.sheet input[type=text]{width:100%;border:1px solid var(--line);background:var(--paper);border-radius:6px;padding:7px 8px;margin-bottom:10px}
+.media{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0 0}
+.media figure{margin:0;position:relative;border:1px solid var(--line);border-radius:8px;padding:4px;background:var(--paper)}
+.media img{display:block;height:110px;width:auto;max-width:100%;border-radius:5px;cursor:zoom-in}
+.media audio{display:block;height:36px;max-width:230px}
+.media figcaption{font-family:var(--mono);font-size:11px;color:var(--muted);padding:3px 2px 0;display:flex;gap:8px;align-items:center;justify-content:space-between}
+.media figcaption button{border:0;background:none;color:var(--sky);padding:0;text-decoration:underline;font-family:var(--display);font-size:12px}
+.media .x{position:absolute;top:-9px;right:-9px;width:24px;height:24px;border-radius:50%;border:1px solid var(--line);background:var(--card);padding:0;line-height:1;font-size:14px}
+.result{margin-top:10px;font-size:14px}
+.result ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
+.result li{display:flex;justify-content:space-between;gap:10px;border-bottom:1px dotted var(--line);padding:3px 0}
+.result li span:last-child{font-family:var(--mono);color:var(--muted);white-space:nowrap}
+.result a{color:var(--sky)}
+.note{font-size:12px;color:var(--muted);margin:6px 0 0}
+#viewer{position:fixed;inset:0;background:rgba(6,14,12,.94);display:none;align-items:center;justify-content:center;z-index:2000;padding:8px;cursor:zoom-out}
+#viewer.show{display:flex}
+#viewer img{max-width:100%;max-height:100%;border-radius:4px}
+.leaflet-container{font-family:var(--display)}
+</style>
+</head>
+<body>
+<header>
+  <h1>MASK<b>.</b>GPSLOGGER</h1>
+  <div id="gps"><i></i><span id="gpsText">GPS 待機中</span></div>
+</header>
+<div id="banner" role="status"></div>
+<div class="app">
+<div id="map"></div>
+<div class="side">
+<div class="gauges">
+  <div><b id="gCount">0</b><span>記録点</span></div>
+  <div><b id="gDist">0.00</b><span>距離 km</span></div>
+  <div><b id="gTime">0:00</b><span>経過</span></div>
+  <div><b id="gElev">--</b><span>標高 m</span></div>
+</div>
+
+<div class="controls">
+  <button class="btn main" id="toggle">記録を始める</button>
+  <button class="btn" id="mark">今ここを記録</button>
+</div>
+
+<main>
+  <div class="filters">
+    <label>日付<select id="fDay"></select></label>
+    <label>場所<select id="fPlace"></select></label>
+    <label class="check"><input type="checkbox" id="fMedia">写真・音声あり</label>
+  </div>
+  <details id="settings">
+    <summary>記録の条件と設定</summary>
+    <div class="form">
+      <label>時間の間隔（秒）<input id="sInterval" type="number" min="5" step="5" inputmode="numeric"></label>
+      <label>移動距離（m）<input id="sDist" type="number" min="5" step="5" inputmode="numeric"></label>
+      <label class="wide">記録するタイミング
+        <select id="sMode">
+          <option value="or">時間か距離、どちらかを満たしたら</option>
+          <option value="and">時間と距離、両方を満たしたら</option>
+          <option value="time">時間だけ</option>
+          <option value="dist">距離だけ</option>
+        </select>
+      </label>
+      <label>精度がこれより悪い時は捨てる（m）<input id="sAcc" type="number" min="5" step="5" inputmode="numeric"></label>
+      <label>天気を取り直す間隔（分）<input id="sWx" type="number" min="1" step="1" inputmode="numeric"></label>
+      <label class="check wide"><input id="sEnrich" type="checkbox">記録するたびに標高と天気を付ける</label>
+      <label class="check wide"><input id="sWake" type="checkbox">記録中は画面を消さない</label>
+      <label class="check wide"><input id="sMarkCam" type="checkbox">「今ここを記録」でカメラを開く</label>
+      <label class="check wide"><input id="sStamp" type="checkbox">写真に日時・位置・標高・天気を書き込む</label>
+      <label class="check wide"><input id="sAutoAudio" type="checkbox">自動記録のたびに、その場の音も録る</label>
+      <label>音を録る長さ（秒）<input id="sAudioSec" type="number" min="2" max="60" step="1" inputmode="numeric"></label>
+      <div class="row wide">
+        <button class="btn small" id="xGpx">GPXで書き出す</button>
+        <button class="btn small" id="xCsv">CSVで書き出す</button>
+        <button class="btn small" id="xZip">バックアップ（写真・音声つき）</button>
+        <button class="btn small" id="xLoad">バックアップを読み込む</button>
+        <button class="btn small" id="xSample">サンプルを見る</button>
+        <button class="btn small" id="xClear">全部消す</button>
+      </div>
+      <p class="note wide" id="envNote"></p>
+    </div>
+  </details>
+
+  <div id="sheetHost"></div>
+  <input id="photoIn" type="file" accept="image/*" capture="environment" hidden>
+  <input id="zipIn" type="file" accept=".zip,application/zip" hidden>
+  <details id="gallery">
+    <summary>写真と音声の一覧 <span id="galCount"></span></summary>
+    <div class="gal" id="galBox"></div>
+  </details>
+
+  <h2>標高の変化 <span id="pRange"></span></h2>
+  <canvas id="profile" width="600" height="128" aria-label="標高の変化グラフ"></canvas>
+
+  <h2>記録</h2>
+  <div id="list"></div>
+</main>
+</div>
+</div>
+<div id="viewer"><img alt="拡大した写真"></div>
+
+<script src="vendor/capacitor.js"></script>
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/jszip.min.js"></script>
+<script>
+"use strict";
+const APP = "MASK.GPSLOGGER";
+const $ = id => document.getElementById(id);
+const KEY = "tabilog.v1";
+const DEF = {interval:60, dist:50, mode:"or", maxAcc:50, wxMin:10, enrich:true, wake:true, autoAudio:false, audioSec:5, markCam:true, stamp:true};
+let state = {points:[], settings:{...DEF}};
+try{
+  const s = JSON.parse(localStorage.getItem(KEY) || "null");
+  if(s && Array.isArray(s.points)) state = {points:s.points, settings:{...DEF, ...(s.settings||{})}};
+}catch(e){}
+const save = () => { try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} };
+
+/* アプリ版(Capacitor)かどうか。アプリ版では画面を消しても測位が続く */
+const CAP = window.Capacitor, NATIVE = !!(CAP && CAP.isNativePlatform && CAP.isNativePlatform());
+const plugin = name => { try{ return window.capacitorExports.registerPlugin(name); }catch(e){ return null; } };
+const BG = NATIVE ? plugin("BackgroundGeolocation") : null;
+const FS = NATIVE ? plugin("Filesystem") : null;
+const SHARE = NATIVE ? plugin("Share") : null;
+const NOTIF = NATIVE ? plugin("LocalNotifications") : null;
+
+let watchId = null, bgWatcher = null, recording = false, lastPos = null, selected = null, wakeLock = null, wxCache = null, shot = null, gpsErr = false;
+let uid = Math.max(Date.now(), ...state.points.map(p => p.id || 0));
+const enrichJobs = new Map(), pastWx = new Map(), placeCache = new Map();
+const view = {day:"", place:"", media:false};   // 絞り込み：日付・場所・写真音声あり
+
+/* ---------- 便利関数 ---------- */
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const rad = d => d * Math.PI / 180;
+function haversine(a, b){
+  const R = 6371000, dLat = rad(b.lat - a.lat), dLon = rad(b.lon - a.lon);
+  const h = Math.sin(dLat/2)**2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+const hm = t => new Date(t).toLocaleTimeString("ja-JP", {hour:"2-digit", minute:"2-digit"});
+const ymd = t => new Date(t).toLocaleDateString("ja-JP", {year:"numeric", month:"long", day:"numeric", weekday:"short"});
+const md = t => new Date(t).toLocaleDateString("ja-JP", {month:"numeric", day:"numeric"});
+const fix = (v, n=0) => (v == null || isNaN(v)) ? "--" : Number(v).toFixed(n);
+const WMO = {0:"快晴",1:"晴れ",2:"晴れ時々くもり",3:"くもり",45:"霧",48:"霧氷",51:"弱い霧雨",53:"霧雨",55:"強い霧雨",56:"着氷性の霧雨",57:"着氷性の霧雨",61:"小雨",63:"雨",65:"大雨",66:"着氷性の雨",67:"着氷性の雨",71:"小雪",73:"雪",75:"大雪",77:"霧雪",80:"にわか雨",81:"にわか雨",82:"激しいにわか雨",85:"にわか雪",86:"強いにわか雪",95:"雷雨",96:"雷雨とひょう",99:"雷雨とひょう"};
+const DIRS = ["北","北北東","北東","東北東","東","東南東","南東","南南東","南","南南西","南西","西南西","西","西北西","北西","北北西"];
+const dirName = d => d == null ? "" : DIRS[Math.round(d / 22.5) % 16];
+const elevOf = p => p.elev ?? p.alt;
+const pad2 = n => String(n).padStart(2, "0");
+const dayKey = t => { const d = new Date(t); return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function visible(){
+  return state.points.filter(p => (!view.day || dayKey(p.t) === view.day) && (!view.place || (p.place || "") === view.place) && (!view.media || (p.media && p.media.length)));
+}
+function splitDays(pts){   // 日付が変わる所で線を切る
+  const segs = []; let cur = null, k = "";
+  for(const p of pts){ const d = dayKey(p.t); if(d !== k){ k = d; cur = []; segs.push(cur); } cur.push(p); }
+  return segs;
+}
+async function getJSON(url){
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 15000);
+  try{
+    const r = await fetch(url, {signal:ctl.signal});
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally { clearTimeout(timer); }
+}
+function banner(msg){ const b = $("banner"); b.textContent = msg || ""; b.className = msg ? "show" : ""; }
+let bannerTimer = null;
+function flash(msg, ms = 4000){ banner(msg); clearTimeout(bannerTimer); bannerTimer = setTimeout(() => banner(""), ms); }
+
+/* ---------- ファイルの保存（ブラウザはダウンロード、アプリ版は共有メニュー） ---------- */
+const blobToB64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = rej; r.readAsDataURL(blob); });
+function bytesToB64(u8){ let bin = ""; for(let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(bin); }
+async function saveOut(name, blob){
+  if(NATIVE && FS && SHARE){
+    try{
+      const buf = new Uint8Array(await blob.arrayBuffer()), CH = 384 * 1024;   // 3の倍数で区切り、少しずつ書き足す
+      await FS.writeFile({path:name, data:bytesToB64(buf.subarray(0, CH)), directory:"CACHE"});
+      for(let i = CH; i < buf.length; i += CH) await FS.appendFile({path:name, data:bytesToB64(buf.subarray(i, i + CH)), directory:"CACHE"});
+      const u = await FS.getUri({path:name, directory:"CACHE"});
+      await SHARE.share({title:name, files:[u.uri]});
+    }catch(e){ if(!/cancel/i.test(String(e && e.message))) flash("保存できませんでした。もう一度試してください。"); }
+    return;
+  }
+  const a = document.createElement("a"), u = URL.createObjectURL(blob);
+  a.href = u; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 10000);
+}
+
+/* ---------- 写真と音声（端末内のIndexedDBに保存） ---------- */
+let dbp = null, recorder = null, recFor = null, urls = [];
+function db(){
+  return dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open("tabilog", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("media");
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+}
+async function idb(mode, fn){
+  const d = await db();
+  return new Promise((res, rej) => {
+    const tx = d.transaction("media", mode), rq = fn(tx.objectStore("media"));
+    tx.oncomplete = () => res(rq && rq.result); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error);
+  });
+}
+const mediaPut = (k, blob) => idb("readwrite", s => s.put(blob, k));
+const mediaGet = k => idb("readonly", s => s.get(k));
+const mediaDel = k => idb("readwrite", s => s.delete(k)).catch(() => {});
+const mediaClear = () => idb("readwrite", s => s.clear()).catch(() => {});
+async function attach(p, kind, blob){
+  const k = "m" + (++uid);
+  try{ await mediaPut(k, blob); }
+  catch(e){ flash("保存できませんでした。端末の空き容量を確認してください。"); return; }
+  (p.media = p.media || []).push({k, kind, t:Date.now()});
+  save(); drawMap(false); drawList(); drawGallery(); if(selected === p.id) drawSheet();
+}
+function stampLines(p){
+  const d = new Date(p.t), w = p.wx, e = elevOf(p);
+  const when = d.toLocaleDateString("ja-JP", {year:"numeric", month:"2-digit", day:"2-digit"}) + " " + d.toLocaleTimeString("ja-JP", {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+  const pos = `${p.lat >= 0 ? "N" : "S"}${Math.abs(p.lat).toFixed(5)}°  ${p.lon >= 0 ? "E" : "W"}${Math.abs(p.lon).toFixed(5)}°` + (e != null ? `  標高 ${Math.round(e)}m` : "");
+  const wx = w ? `${WMO[w.code] ?? ""}  ${fix(w.temp,1)}℃  湿度 ${fix(w.hum,0)}%  ${dirName(w.dir)}の風 ${fix(w.wind,1)}m/s` : "";
+  return [when, pos, p.place || "", wx, p.note || ""].filter(Boolean);
+}
+async function loadImage(file){
+  if(window.createImageBitmap){ try{ return await createImageBitmap(file, {imageOrientation:"from-image"}); }catch(e){} }
+  return await new Promise((res, rej) => { const i = new Image(), u = URL.createObjectURL(file); i.onload = () => { URL.revokeObjectURL(u); res(i); }; i.onerror = rej; i.src = u; });
+}
+async function makePhoto(file, p, doStamp){
+  try{
+    const bmp = await loadImage(file), max = 2000, bw = bmp.width || bmp.naturalWidth, bh = bmp.height || bmp.naturalHeight, r = Math.min(1, max / Math.max(bw, bh));
+    const c = document.createElement("canvas"), W = c.width = Math.round(bw * r), H = c.height = Math.round(bh * r);
+    const g = c.getContext("2d");
+    g.drawImage(bmp, 0, 0, W, H);
+    if(doStamp){
+      const lines = stampLines(p), fs = Math.max(16, Math.round(Math.min(W, H) * .032)), pad = Math.round(fs * .9), lh = Math.round(fs * 1.45);
+      const sans = '"Zen Kaku Gothic New","Hiragino Sans","Noto Sans JP",sans-serif', mono = '"DM Mono",ui-monospace,monospace';
+      const bandH = (pad * 2 + lh * (lines.length + 1)) * 1.4;
+      const grad = g.createLinearGradient(0, H - bandH, 0, H);
+      grad.addColorStop(0, "rgba(10,24,21,0)"); grad.addColorStop(.4, "rgba(10,24,21,.6)"); grad.addColorStop(1, "rgba(10,24,21,.88)");
+      g.fillStyle = grad; g.fillRect(0, H - bandH, W, bandH);
+      g.textBaseline = "alphabetic";
+      let y = H - pad - lh * lines.length;
+      g.fillStyle = "#ff8a55"; g.fillRect(pad, y - fs * .95, Math.round(fs * .22), fs * 1.05);
+      g.fillStyle = "#ffffff"; g.font = `500 ${Math.round(fs * 1.05)}px ${mono}`;
+      g.fillText(APP, pad + Math.round(fs * .55), y);
+      for(const line of lines){
+        y += lh; let size = fs;
+        g.font = `500 ${size}px ${sans}`;
+        while(size > 10 && g.measureText(line).width > W - pad * 2){ size -= 1; g.font = `500 ${size}px ${sans}`; }
+        g.fillStyle = "#eef4f1"; g.fillText(line, pad, y);
+      }
+    }
+    return await new Promise(res => c.toBlob(bl => res(bl || file), "image/jpeg", .88));
+  }catch(e){ return file; }
+}
+async function recordAudio(p, seconds, quiet){
+  if(recorder) return;
+  if(!navigator.mediaDevices || !window.MediaRecorder){ if(!quiet) flash("この環境は録音に対応していません。"); return; }
+  let stream;
+  try{ stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ if(!quiet) flash("マイクが許可されていません。設定でマイクを許可してください。"); return; }
+  const chunks = [], rec = new MediaRecorder(stream);
+  recorder = rec; recFor = p.id;
+  rec.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    stream.getTracks().forEach(t => t.stop());
+    recorder = null; recFor = null;
+    if(chunks.length) attach(p, "audio", new Blob(chunks, {type:rec.mimeType || "audio/webm"}));
+    else if(selected === p.id) drawSheet();
+  };
+  rec.start();
+  setTimeout(() => { if(rec.state !== "inactive") rec.stop(); }, seconds * 1000);
+  if(selected === p.id) drawSheet();
+}
+async function drawMedia(p){
+  const box = $("mediaBox"); if(!box) return;
+  const old = urls; urls = [];
+  const parts = [];
+  for(const m of (p.media || [])){
+    let blob = null; try{ blob = await mediaGet(m.k); }catch(e){}
+    if(!blob) continue;
+    const u = URL.createObjectURL(blob); urls.push(u);
+    parts.push(`<figure>${m.kind === "photo" ? `<img src="${u}" alt="この地点の写真" data-act="zoom">` : `<audio controls preload="metadata" src="${u}"></audio>`}
+      <figcaption><span>${hm(m.t)} ${m.kind === "photo" ? "写真" : "音声"}</span><button data-act="msave" data-k="${m.k}">保存</button></figcaption>
+      <button class="x" data-act="mdel" data-k="${m.k}" aria-label="これを消す">×</button></figure>`);
+  }
+  if($("mediaBox") === box && selected === p.id) box.innerHTML = parts.join("");
+  old.forEach(u => URL.revokeObjectURL(u));
+}
+const mediaLabel = p => { const m = p.media || [], a = m.filter(x => x.kind === "photo").length, b = m.length - a;
+  return [a ? "写真" + a : "", b ? "音声" + b : ""].filter(Boolean).join("・"); };
+
+/* ---------- 地図 ---------- */
+const map = L.map("map", {zoomControl:false}).setView([35.681, 139.767], 12);
+const gsiAttr = '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>';
+const gsi = L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png", {maxZoom:18, attribution:gsiAttr});
+const photo = L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg", {maxZoom:18, attribution:gsiAttr});
+const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'});
+gsi.addTo(map);
+L.control.layers({"地理院地図":gsi, "航空写真":photo, "OpenStreetMap":osm}, null, {position:"topright"}).addTo(map);
+L.control.zoom({position:"bottomright"}).addTo(map);
+const track = L.polyline([], {color:"#e2622b", weight:4, opacity:.85}).addTo(map);
+const dots = L.layerGroup().addTo(map);
+const here = L.circleMarker([0,0], {radius:8, color:"#fff", weight:3, fillColor:"#2f6f9f", fillOpacity:1, interactive:false});
+const hereAcc = L.circle([0,0], {radius:1, color:"#2f6f9f", weight:1, fillOpacity:.12, interactive:false});
+
+function drawMap(fit){
+  const vis = visible();
+  track.setLatLngs(splitDays(vis).map(seg => seg.map(p => [p.lat, p.lon])));
+  dots.clearLayers();
+  vis.forEach(p => {
+    const sel = p.id === selected, has = p.media && p.media.length;
+    L.circleMarker([p.lat, p.lon], {radius: sel ? 10 : has ? 7 : 5, color: has ? "#ffd166" : "#fff", weight: has ? 3 : 2,
+      fillColor: sel ? "#16302b" : (p.manual ? "#e2622b" : "#1f5a4c"), fillOpacity:1})
+      .on("click", () => select(p.id)).addTo(dots);
+  });
+  if(fit && vis.length){
+    if(vis.length === 1) map.setView([vis[0].lat, vis[0].lon], 15);
+    else map.fitBounds(L.latLngBounds(vis.map(p => [p.lat, p.lon])), {padding:[28,28], maxZoom:16});
+  }
+}
+
+/* ---------- 表示 ---------- */
+function totalDist(pts){
+  let d = 0;
+  for(const seg of splitDays(pts)) for(let i = 1; i < seg.length; i++) d += haversine(seg[i-1], seg[i]);
+  return d;
+}
+function drawGauges(){
+  const pts = visible();
+  $("gCount").textContent = pts.length;
+  $("gDist").textContent = (totalDist(pts) / 1000).toFixed(2);
+  let ms = 0; for(const seg of splitDays(pts)) ms += seg[seg.length-1].t - seg[0].t;
+  const m = Math.round(ms / 60000);
+  $("gTime").textContent = Math.floor(m / 60) + ":" + pad2(m % 60);
+  const last = pts[pts.length-1];
+  const e = lastPos && recording ? (last && Math.abs(last.t - lastPos.t) < 120000 ? elevOf(last) : lastPos.alt) : (last ? elevOf(last) : null);
+  $("gElev").textContent = fix(e, 0);
+}
+function drawProfile(){
+  const c = $("profile"), g = c.getContext("2d"), css = getComputedStyle(document.documentElement);
+  const W = c.width, H = c.height, pad = 10;
+  g.clearRect(0, 0, W, H);
+  const es = visible().map(elevOf).filter(v => v != null && !isNaN(v));
+  if(es.length < 2){ $("pRange").textContent = ""; return; }
+  const lo = Math.min(...es), hi = Math.max(...es), span = Math.max(hi - lo, 1);
+  let up = 0; for(let i = 1; i < es.length; i++) if(es[i] > es[i-1]) up += es[i] - es[i-1];
+  $("pRange").textContent = `${Math.round(lo)}〜${Math.round(hi)}m ／ 上り計 ${Math.round(up)}m`;
+  const x = i => pad + (W - pad*2) * i / (es.length - 1);
+  const y = v => H - pad - (H - pad*2) * (v - lo) / span;
+  g.beginPath(); g.moveTo(x(0), H - pad);
+  es.forEach((v, i) => g.lineTo(x(i), y(v)));
+  g.lineTo(x(es.length-1), H - pad); g.closePath();
+  g.globalAlpha = .18; g.fillStyle = css.getPropertyValue("--pine"); g.fill(); g.globalAlpha = 1;
+  g.beginPath(); es.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)));
+  g.lineWidth = 3; g.lineJoin = "round"; g.strokeStyle = css.getPropertyValue("--pine"); g.stroke();
+  g.beginPath(); g.arc(x(es.length-1), y(es[es.length-1]), 5, 0, Math.PI*2);
+  g.fillStyle = css.getPropertyValue("--signal"); g.fill();
+}
+function wxLine(p){
+  if(!p.wx) return p.wxFail ? "天気は未取得（電波が戻ると補います）" : (state.settings.enrich ? "天気を取得中…" : "");
+  const w = p.wx;
+  return `${WMO[w.code] ?? "天気不明"} ${fix(w.temp,1)}℃ ／ ${dirName(w.dir)}の風 ${fix(w.wind,1)}m/s`;
+}
+function drawList(){
+  const el = $("list");
+  const vis = visible();
+  if(state.points.length && !vis.length){ el.innerHTML = '<div class="empty">この条件に合う記録はありません。日付や場所の絞り込みを変えてください。</div>'; return; }
+  if(!state.points.length){
+    el.innerHTML = '<div class="empty">まだ記録がありません。「記録を始める」を押すと、設定した条件で自動的に地点を残します。「今ここを記録」は、その場で写真つきの記録を作ります。設定の中の「サンプルを見る」で表示の例を確認できます。</div>';
+    return;
+  }
+  let html = "", day = "";
+  vis.slice().reverse().forEach(p => {
+    const d = ymd(p.t);
+    if(d !== day){ day = d; html += `<div class="day">${esc(d)}</div>`; }
+    html += `<button class="entry${p.manual ? " manual" : ""}" data-id="${p.id}">
+      <span class="t">${hm(p.t)}</span>
+      <span class="a">${esc(p.note || (p.manual ? "手動で記録" : "自動記録"))}</span>
+      <span class="w">${esc([p.place, wxLine(p), mediaLabel(p)].filter(Boolean).join(" ／ "))}</span>
+      <span class="e">${fix(elevOf(p),0)}m</span>
+    </button>`;
+  });
+  el.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px">' + html + "</div>";
+}
+function drawSheet(){
+  const host = $("sheetHost"), p = state.points.find(q => q.id === selected);
+  if(!p){ host.innerHTML = ""; return; }
+  const w = p.wx || {}, keep = document.activeElement && document.activeElement.id === "noteIn";
+  host.innerHTML = `<section class="sheet">
+    <h3><span>${md(p.t)} ${hm(p.t)} の地点</span><button class="btn small" data-act="close">閉じる</button></h3>
+    <dl class="kv">
+      <div style="grid-column:1/-1"><dt>場所</dt><dd style="font-family:var(--display)">${esc(p.place || "--")}</dd></div>
+      <div><dt>緯度・経度</dt><dd>${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}</dd></div>
+      <div><dt>標高（地図）</dt><dd>${fix(p.elev,1)} m</dd></div>
+      <div><dt>GPS高度／精度</dt><dd>${fix(p.alt,0)} m ／ ±${fix(p.acc,0)} m</dd></div>
+      <div><dt>天気</dt><dd>${esc(WMO[w.code] ?? "--")}</dd></div>
+      <div><dt>気温／湿度</dt><dd>${fix(w.temp,1)} ℃ ／ ${fix(w.hum,0)} %</dd></div>
+      <div><dt>風</dt><dd>${esc(dirName(w.dir))} ${fix(w.wind,1)} m/s</dd></div>
+      <div><dt>最大瞬間風速</dt><dd>${fix(w.gust,1)} m/s</dd></div>
+      <div><dt>気圧</dt><dd>${fix(w.pres,0)} hPa</dd></div>
+    </dl>
+    <input type="text" id="noteIn" placeholder="メモ（例：山頂、昼ごはん）" value="${esc(p.note || "")}">
+    <div class="row" style="margin-bottom:8px">
+      <button class="btn small" data-act="photo">写真を付ける</button>
+      <button class="btn small${recFor === p.id ? " live" : ""}" data-act="audio">${recFor === p.id ? "録音を止める" : "音声を録る"}</button>
+    </div>
+    <div class="row">
+      <button class="btn small" data-act="birds">この辺りの野鳥</button>
+      <button class="btn small" data-act="spots">近くの名所</button>
+      <button class="btn small" data-act="rewx">天気を取り直す</button>
+      <button class="btn small" data-act="del">この地点を消す</button>
+    </div>
+    <div class="media" id="mediaBox"></div>
+    <div class="result" id="result">${p.sample ? '<p class="note">これはサンプルの地点です。数値は例です。</p>' : ""}</div>
+  </section>`;
+  if(keep){ const n = $("noteIn"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }
+  drawMedia(p);
+}
+function drawFilters(){
+  const days = new Map(), places = new Map();
+  for(const p of state.points){ const d = dayKey(p.t); days.set(d, (days.get(d) || 0) + 1); if(p.place) places.set(p.place, (places.get(p.place) || 0) + 1); }
+  if(view.day && !days.has(view.day)) view.day = "";
+  if(view.place && !places.has(view.place)) view.place = "";
+  const wd = "日月火水木金土";
+  $("fDay").innerHTML = `<option value="">すべて（${days.size}日）</option>` + [...days.keys()].sort().reverse().map(d => {
+    const t = new Date(d + "T12:00:00"); return `<option value="${d}">${t.getFullYear()}/${t.getMonth()+1}/${t.getDate()}（${wd[t.getDay()]}） ${days.get(d)}点</option>`; }).join("");
+  $("fPlace").innerHTML = `<option value="">すべて（${places.size}か所）</option>` + [...places.entries()].sort((a, b) => b[1] - a[1]).map(([n, c]) => `<option value="${esc(n)}">${esc(n)} ${c}点</option>`).join("");
+  $("fDay").value = view.day; $("fPlace").value = view.place; $("fMedia").checked = view.media;
+}
+let galUrls = [], galRun = 0;
+async function drawGallery(){
+  const items = [];
+  for(const p of visible()) for(const m of (p.media || [])) items.push({p, m});
+  $("galCount").textContent = items.length ? items.length + "件" : "";
+  const box = $("galBox"), run = ++galRun;
+  if(!$("gallery").open){ return; }
+  const old = galUrls; galUrls = [];
+  const parts = [];
+  for(const {p, m} of items.slice(-120).reverse()){
+    if(m.kind === "photo"){
+      let blob = null; try{ blob = await mediaGet(m.k); }catch(e){}
+      if(run !== galRun) { galUrls.forEach(u => URL.revokeObjectURL(u)); return; }
+      if(!blob) continue;
+      const u = URL.createObjectURL(blob); galUrls.push(u);
+      parts.push(`<button data-id="${p.id}"><img src="${u}" alt="${esc(md(m.t) + " " + hm(m.t))} の写真" loading="lazy"><span>${md(m.t)} ${hm(m.t)}</span></button>`);
+    } else parts.push(`<button class="au" data-id="${p.id}"><b>♪</b><span>${md(m.t)} ${hm(m.t)}</span></button>`);
+  }
+  box.innerHTML = parts.length ? parts.join("") : '<p class="note" style="grid-column:1/-1">写真や音声はまだありません。</p>';
+  old.forEach(u => URL.revokeObjectURL(u));
+}
+function drawAll(fit){ drawFilters(); drawMap(fit); drawGauges(); drawProfile(); drawList(); drawSheet(); drawGallery(); }
+function select(id){
+  selected = id; drawMap(false); drawSheet();
+  const p = state.points.find(q => q.id === id);
+  if(p){ map.panTo([p.lat, p.lon]); $("sheetHost").scrollIntoView({behavior:"smooth", block:"start"}); }
+}
+
+/* ---------- 付加情報：標高（国土地理院）と天気（Open-Meteo） ---------- */
+async function fetchElev(p){
+  try{
+    const j = await getJSON(`https://cyberjapandata2.gsi.go.jp/general/dem/scripts/getelevation.php?lon=${p.lon}&lat=${p.lat}&outtype=JSON`);
+    const v = parseFloat(j.elevation);
+    if(!isNaN(v)) return v;
+  }catch(e){}
+  const j = await getJSON(`https://api.open-meteo.com/v1/elevation?latitude=${p.lat}&longitude=${p.lon}`);
+  if(j.elevation && j.elevation.length && j.elevation[0] != null) return j.elevation[0];
+  return null;
+}
+const WXVARS = "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure";
+async function fetchWxNow(p, force){
+  const fresh = wxCache && (p.t - wxCache.t) < state.settings.wxMin * 60000 && (p.t - wxCache.t) >= 0 && haversine(p, wxCache) < 1000;
+  if(fresh && !force) return wxCache.wx;
+  const j = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}&current=${WXVARS}&wind_speed_unit=ms&timezone=auto`);
+  const c = j.current;
+  const wx = {temp:c.temperature_2m, hum:c.relative_humidity_2m, code:c.weather_code, wind:c.wind_speed_10m, dir:c.wind_direction_10m, gust:c.wind_gusts_10m, pres:c.surface_pressure};
+  wxCache = {t:p.t, lat:p.lat, lon:p.lon, wx};
+  return wx;
+}
+/* 圏外や画面オフで取れなかった地点は、あとからその時刻の天気を取りに行く */
+async function fetchWxPast(p){
+  if(Date.now() - p.t > 85 * 864e5) return null;
+  const hour = new Date(Math.round(p.t / 36e5) * 36e5).toISOString().slice(0, 13) + ":00";
+  const key = hour + "|" + p.lat.toFixed(2) + "|" + p.lon.toFixed(2);
+  if(pastWx.has(key)) return pastWx.get(key);
+  const j = await getJSON(`https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}&hourly=${WXVARS}&wind_speed_unit=ms&timezone=GMT&start_hour=${hour}&end_hour=${hour}`);
+  const h = j.hourly;
+  if(!h || !h.time || !h.time.length || h.temperature_2m[0] == null) return null;
+  const wx = {temp:h.temperature_2m[0], hum:h.relative_humidity_2m[0], code:h.weather_code[0], wind:h.wind_speed_10m[0], dir:h.wind_direction_10m[0], gust:h.wind_gusts_10m[0], pres:h.surface_pressure[0], past:true};
+  pastWx.set(key, wx);
+  return wx;
+}
+/* 場所の名前（OpenStreetMap Nominatim）。同じ辺りは使い回し、1秒に1回までにする */
+let placeChain = Promise.resolve(), placeDownUntil = 0;
+const placeKey = p => p.lat.toFixed(2) + "," + p.lon.toFixed(2);
+function fetchPlace(p){
+  const key = placeKey(p);
+  if(placeCache.has(key)) return Promise.resolve(placeCache.get(key));
+  if(Date.now() < placeDownUntil) return Promise.resolve(null);
+  const job = placeChain.catch(() => {}).then(async () => {
+    if(placeCache.has(key)) return placeCache.get(key);
+    if(Date.now() < placeDownUntil) return null;
+    try{
+      const j = await getJSON(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${p.lat}&lon=${p.lon}&zoom=12&accept-language=ja`);
+      const a = j.address || {};
+      const name = [a.province || a.state || "", a.city || a.town || a.village || a.municipality || a.county || ""].filter(Boolean).join(" ") || (j.name || "");
+      await sleep(1100);
+      if(name) placeCache.set(key, name);
+      return name || null;
+    }catch(e){ placeDownUntil = Date.now() + 10 * 60000; return null; }
+  });
+  placeChain = job;
+  return job;
+}
+const fetchWx = (p, force) => (Date.now() - p.t > 40 * 60000) ? fetchWxPast(p) : fetchWxNow(p, force);
+async function enrich(p, force){
+  if(p.sample) return true;
+  const [e, w] = await Promise.allSettled([p.elev == null ? fetchElev(p) : Promise.resolve(p.elev), (p.wx && !force) ? Promise.resolve(p.wx) : fetchWx(p, force)]);
+  if(e.status === "fulfilled" && e.value != null) p.elev = e.value;
+  if(w.status === "fulfilled" && w.value){ p.wx = w.value; delete p.wxFail; }
+  else if(!p.wx) p.wxFail = true;
+  save(); drawGauges(); drawProfile(); drawList(); if(selected === p.id) drawSheet();
+  if(!p.place) fetchPlace(p).then(name => { if(name && !p.place){ p.place = name; save(); drawFilters(); drawList(); if(selected === p.id) drawSheet(); } });
+  return w.status === "fulfilled" && e.status === "fulfilled";
+}
+let filling = false;
+async function backfill(){
+  if(filling || !navigator.onLine || !state.settings.enrich) return;
+  filling = true;
+  try{
+    for(const p of state.points.slice()){
+      if(p.sample) continue;
+      if(p.wx && p.elev != null){ if(!p.place){ const name = await fetchPlace(p); if(name){ p.place = name; save(); drawFilters(); drawList(); } } continue; }
+      if(enrichJobs.has(p.id)) continue;
+      const ok = await enrich(p, false);
+      if(!ok && !p.wx && p.elev == null) break;   // まだ通信できないので次の機会に
+    }
+  } finally { filling = false; }
+}
+async function showBirds(p){
+  const out = $("result"); out.innerHTML = "野鳥の観察記録を調べています…";
+  try{
+    const d1 = new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10);
+    const j = await getJSON(`https://api.inaturalist.org/v1/observations/species_counts?lat=${p.lat}&lng=${p.lon}&radius=5&iconic_taxa=Aves&locale=ja&quality_grade=research&d1=${d1}&per_page=15`);
+    if(!j.results || !j.results.length){ out.innerHTML = "半径5km・過去90日の観察記録は見つかりませんでした。"; return; }
+    out.innerHTML = "<b>半径5km・過去90日に観察された鳥</b><ul>" + j.results.map(r =>
+      `<li><span>${esc(r.taxon.preferred_common_name || r.taxon.name)}</span><span>${Number(r.count)}件</span></li>`).join("") +
+      '</ul><p class="note">出典 iNaturalist。みんなの観察記録なので、今いるとは限りません。</p>';
+  }catch(e){ out.innerHTML = "野鳥の情報を取得できませんでした。通信状態を確認して、もう一度押してください。"; }
+}
+async function showSpots(p){
+  const out = $("result"); out.innerHTML = "近くの名所を調べています…";
+  try{
+    const j = await getJSON(`https://ja.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=${p.lat}%7C${p.lon}&gsradius=5000&gslimit=15&format=json&origin=*`);
+    const g = j.query && j.query.geosearch || [];
+    if(!g.length){ out.innerHTML = "半径5kmにWikipediaの記事がある場所は見つかりませんでした。"; return; }
+    out.innerHTML = "<b>半径5kmの場所（近い順）</b><ul>" + g.map(s =>
+      `<li><a href="https://ja.wikipedia.org/?curid=${Number(s.pageid)}" target="_blank" rel="noopener">${esc(s.title)}</a><span>${s.dist < 1000 ? Math.round(s.dist) + "m" : (s.dist/1000).toFixed(1) + "km"}</span></li>`).join("") +
+      '</ul><p class="note">出典 Wikipedia 日本語版。</p>';
+  }catch(e){ out.innerHTML = "名所の情報を取得できませんでした。通信状態を確認して、もう一度押してください。"; }
+}
+
+/* ---------- 記録 ---------- */
+function addPoint(pos, manual){
+  const p = {id:++uid, t:pos.t, lat:pos.lat, lon:pos.lon, alt:pos.alt, acc:pos.acc, spd:pos.spd, elev:null, wx:null, note:"", manual:!!manual};
+  if(state.points.some(q => q.sample)){ state.points = []; banner(""); }
+  if(view.day && view.day !== dayKey(p.t)) view.day = "";
+  view.place = ""; view.media = false;
+  state.points.push(p); save(); drawAll(false);
+  if(state.settings.enrich || manual){
+    const job = enrich(p, false).finally(() => enrichJobs.delete(p.id));
+    enrichJobs.set(p.id, job);
+  }
+  if(!manual && state.settings.autoAudio && document.visibilityState === "visible") recordAudio(p, state.settings.audioSec, true);
+  return p;
+}
+function shouldRecord(pos){
+  const s = state.settings, last = state.points[state.points.length - 1];
+  if(!last || last.sample) return true;
+  const dt = (pos.t - last.t) / 1000 >= s.interval, dd = haversine(last, pos) >= s.dist;
+  return s.mode === "or" ? (dt || dd) : s.mode === "and" ? (dt && dd) : s.mode === "time" ? dt : dd;
+}
+function onFix(pos){
+  lastPos = pos;
+  here.setLatLng([pos.lat, pos.lon]).addTo(map);
+  hereAcc.setLatLng([pos.lat, pos.lon]).setRadius(pos.acc || 1).addTo(map);
+  if(gpsErr){ gpsErr = false; banner(""); }
+  $("gps").className = "on";
+  $("gpsText").textContent = "精度 ±" + Math.round(pos.acc) + "m";
+  if(recording){
+    if(pos.acc > state.settings.maxAcc) $("gpsText").textContent += "（悪いので保留）";
+    else if(shouldRecord(pos)){ addPoint(pos, false); if(document.visibilityState === "visible") map.panTo([pos.lat, pos.lon]); }
+  }
+  drawGauges();
+}
+const onPos = g => onFix({t:Date.now(), lat:g.coords.latitude, lon:g.coords.longitude, alt:g.coords.altitude, acc:g.coords.accuracy, spd:g.coords.speed});
+function onErr(e){
+  $("gps").className = "err"; $("gpsText").textContent = "GPS エラー"; gpsErr = true;
+  banner(e.code === 1 ? "位置情報が許可されていません。設定でこのアプリ（ページ）の位置情報を許可してください。"
+       : e.code === 2 ? "現在地を取得できません。空が見える場所で試してください。"
+       : "現在地の取得に時間がかかっています。");
+  if(e.code === 1) stop();
+}
+async function start(){
+  if(recording) return;
+  banner("");
+  if(NATIVE && BG){
+    recording = true; setRecUI();
+    try{ if(NOTIF) await NOTIF.requestPermissions(); }catch(e){}
+    const s = state.settings;
+    try{
+      bgWatcher = await BG.addWatcher({
+        backgroundTitle: APP + " 記録中",
+        backgroundMessage: "設定した条件で地点を記録しています。",
+        requestPermissions: true, stale: false,
+        distanceFilter: (s.mode === "dist" || s.mode === "and") ? Math.max(5, Math.round(s.dist / 2)) : 0
+      }, (loc, err) => {
+        if(err){
+          if(err.code === "NOT_AUTHORIZED"){ onErr({code:1}); }
+          return;
+        }
+        if(loc) onFix({t:loc.time || Date.now(), lat:loc.latitude, lon:loc.longitude, alt:loc.altitude, acc:loc.accuracy, spd:loc.speed});
+      });
+    }catch(e){ recording = false; setRecUI(); banner("測位を開始できませんでした。位置情報の許可を確認してください。"); return; }
+  } else {
+    if(!("geolocation" in navigator)){ banner("このブラウザは位置情報に対応していません。"); return; }
+    recording = true; setRecUI();
+    watchId = navigator.geolocation.watchPosition(onPos, onErr, {enableHighAccuracy:true, maximumAge:0, timeout:30000});
+  }
+  $("gpsText").textContent = "GPS 測位中…";
+  requestWake();
+}
+function stop(){
+  recording = false;
+  if(watchId != null){ navigator.geolocation.clearWatch(watchId); watchId = null; }
+  if(bgWatcher != null && BG){ BG.removeWatcher({id:bgWatcher}).catch(() => {}); bgWatcher = null; }
+  setRecUI();
+  $("gps").className = ""; $("gpsText").textContent = "GPS 待機中";
+  if(wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+function setRecUI(){ $("toggle").textContent = recording ? "記録を止める" : "記録を始める"; $("toggle").classList.toggle("rec", recording); }
+async function requestWake(){
+  if(recording && state.settings.wake && "wakeLock" in navigator && document.visibilityState === "visible"){
+    try{ wakeLock = await navigator.wakeLock.request("screen"); }catch(e){}
+  }
+}
+document.addEventListener("visibilitychange", () => { if(document.visibilityState === "visible"){ requestWake(); backfill(); drawAll(false); } });
+window.addEventListener("online", backfill);
+$("toggle").onclick = () => recording ? stop() : start();
+
+function markPoint(){
+  return new Promise(res => {
+    if(lastPos && Date.now() - lastPos.t < 15000){ const p = addPoint({...lastPos, t:Date.now()}, true); select(p.id); return res(p); }
+    if(!("geolocation" in navigator)){ banner("この環境は位置情報に対応していません。"); return res(null); }
+    $("gpsText").textContent = "GPS 測位中…";
+    navigator.geolocation.getCurrentPosition(g => {
+      onPos(g); const p = addPoint({...lastPos, t:Date.now()}, true);
+      select(p.id); map.setView([p.lat, p.lon], Math.max(map.getZoom(), 15)); res(p);
+    }, e => { onErr(e); res(null); }, {enableHighAccuracy:true, timeout:30000, maximumAge:5000});
+  });
+}
+$("mark").onclick = () => {
+  const pp = markPoint();
+  if(state.settings.markCam){ shot = pp; $("photoIn").click(); }   // カメラは押した瞬間に開く。測位と天気は撮影中に進む
+};
+
+/* ---------- 一覧と詳細の操作 ---------- */
+$("list").addEventListener("click", e => { const b = e.target.closest(".entry"); if(b) select(Number(b.dataset.id)); });
+$("sheetHost").addEventListener("click", async e => {
+  const act = e.target.dataset && e.target.dataset.act, p = state.points.find(q => q.id === selected);
+  if(!act || !p) return;
+  if(act === "close"){ selected = null; drawMap(false); drawSheet(); }
+  if(act === "birds") showBirds(p);
+  if(act === "spots") showSpots(p);
+  if(act === "rewx"){ $("result").textContent = "天気を取得しています…"; const ok = await enrich(p, true); const r = $("result"); if(r && selected === p.id) r.textContent = ok ? "" : "取得できませんでした。通信状態を確認してください。"; }
+  if(act === "photo"){ shot = null; $("photoIn").click(); }
+  if(act === "audio"){ if(recorder){ if(recFor === p.id) recorder.stop(); else flash("別の地点で録音中です。終わってから押してください。"); } else recordAudio(p, 60, false); }
+  if(act === "zoom"){ $("viewer").firstElementChild.src = e.target.src; $("viewer").classList.add("show"); }
+  if(act === "msave"){ const m = (p.media || []).find(x => x.k === e.target.dataset.k); if(!m) return;
+    const blob = await mediaGet(m.k); if(!blob) return;
+    const ext = m.kind === "photo" ? "jpg" : (/mp4|aac/.test(blob.type) ? "m4a" : /ogg/.test(blob.type) ? "ogg" : "webm");
+    const d = new Date(m.t), ts = d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0") + "-" + String(d.getHours()).padStart(2,"0") + String(d.getMinutes()).padStart(2,"0") + String(d.getSeconds()).padStart(2,"0");
+    saveOut(`mask-gpslogger-${ts}.${ext}`, blob); }
+  if(act === "mdel"){ const k = e.target.dataset.k; p.media = (p.media || []).filter(m => m.k !== k); mediaDel(k); save(); drawMap(false); drawList(); drawSheet(); }
+  if(act === "del"){ (p.media || []).forEach(m => mediaDel(m.k)); state.points = state.points.filter(q => q.id !== p.id); selected = null; save(); drawAll(false); }
+});
+$("viewer").onclick = () => $("viewer").classList.remove("show");
+$("photoIn").addEventListener("change", async e => {
+  const f = e.target.files && e.target.files[0], pp = shot;
+  shot = null; e.target.value = "";
+  if(!f) return;
+  const p = pp ? await pp : state.points.find(q => q.id === selected);
+  if(!p){ banner("現在地を取得できなかったので、写真は保存していません。もう一度試してください。"); return; }
+  const doStamp = state.settings.stamp;
+  if(doStamp && (!p.wx || p.elev == null) && enrichJobs.has(p.id)){
+    banner("写真にデータを書き込んでいます…");
+    await Promise.race([enrichJobs.get(p.id), new Promise(r => setTimeout(r, 8000))]);
+    banner("");
+  }
+  await attach(p, "photo", await makePhoto(f, p, doStamp));
+});
+$("sheetHost").addEventListener("input", e => {
+  if(e.target.id !== "noteIn") return;
+  const p = state.points.find(q => q.id === selected);
+  if(p){ p.note = e.target.value; save(); drawList(); }
+});
+
+$("fDay").onchange = e => { view.day = e.target.value; selected = null; drawAll(true); };
+$("fPlace").onchange = e => { view.place = e.target.value; selected = null; drawAll(true); };
+$("fMedia").onchange = e => { view.media = e.target.checked; selected = null; drawAll(true); };
+$("gallery").addEventListener("toggle", drawGallery);
+$("galBox").addEventListener("click", e => { const b = e.target.closest("button[data-id]"); if(b) select(Number(b.dataset.id)); });
+
+/* ---------- 設定 ---------- */
+function loadSettings(){
+  const s = state.settings;
+  $("sInterval").value = s.interval; $("sDist").value = s.dist; $("sMode").value = s.mode;
+  $("sAcc").value = s.maxAcc; $("sWx").value = s.wxMin; $("sEnrich").checked = s.enrich; $("sWake").checked = s.wake;
+  $("sMarkCam").checked = s.markCam; $("sStamp").checked = s.stamp;
+  $("sAutoAudio").checked = s.autoAudio; $("sAudioSec").value = s.audioSec;
+}
+$("settings").addEventListener("change", () => {
+  const s = state.settings, n = (id, d, min) => Math.max(min, parseFloat($(id).value) || d);
+  s.interval = n("sInterval", DEF.interval, 5); s.dist = n("sDist", DEF.dist, 5); s.mode = $("sMode").value;
+  s.maxAcc = n("sAcc", DEF.maxAcc, 5); s.wxMin = n("sWx", DEF.wxMin, 1);
+  s.enrich = $("sEnrich").checked; s.wake = $("sWake").checked;
+  s.markCam = $("sMarkCam").checked; s.stamp = $("sStamp").checked;
+  s.autoAudio = $("sAutoAudio").checked; s.audioSec = Math.min(60, n("sAudioSec", DEF.audioSec, 2));
+  save(); loadSettings();
+});
+
+/* ---------- 書き出し ---------- */
+const stamp = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0"); };
+function buildGpx(list){
+  const seg = pts0 => pts0.map(p => {
+    const e = elevOf(p), w = p.wx;
+    const desc = [p.note, w ? `${WMO[w.code] ?? ""} ${fix(w.temp,1)}C ${fix(w.hum,0)}% ${dirName(w.dir)} ${fix(w.wind,1)}m/s` : ""].filter(Boolean).join(" / ");
+    return `      <trkpt lat="${p.lat}" lon="${p.lon}">${e != null ? `<ele>${Number(e).toFixed(1)}</ele>` : ""}<time>${new Date(p.t).toISOString()}</time>${desc ? `<desc>${esc(desc)}</desc>` : ""}</trkpt>`;
+  }).join("\n");
+  const segs = splitDays(list).map(sg => `    <trkseg>\n${seg(sg)}\n    </trkseg>`).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="${APP}" xmlns="http://www.topografix.com/GPX/1/1">\n  <trk><name>${APP} ${stamp()}</name>\n${segs}\n  </trk>\n</gpx>\n`;
+}
+function buildCsv(list){
+  const q = v => '"' + String(v ?? "").replace(/"/g, '""') + '"';
+  const head = ["日時","場所","緯度","経度","標高m","GPS高度m","精度m","天気","気温C","湿度%","風向","風速m/s","最大瞬間風速m/s","気圧hPa","種別","写真・音声","メモ"];
+  const rows = list.map(p => { const w = p.wx || {};
+    return [new Date(p.t).toLocaleString("ja-JP"), p.place || "", p.lat, p.lon, p.elev, p.alt, p.acc, WMO[w.code] ?? "", w.temp, w.hum, dirName(w.dir), w.wind, w.gust, w.pres, p.manual ? "手動" : "自動", mediaLabel(p), p.note].map(q).join(","); });
+  return "﻿" + head.map(q).join(",") + "\n" + rows.join("\n") + "\n";
+}
+/* GPXとCSVは、いま絞り込んで表示している記録を書き出す */
+$("xGpx").onclick = () => { const v = visible(); v.length ? saveOut(`mask-gpslogger-${view.day || stamp()}.gpx`, new Blob([buildGpx(v)], {type:"application/gpx+xml"})) : flash("書き出す記録がありません。"); };
+$("xCsv").onclick = () => { const v = visible(); v.length ? saveOut(`mask-gpslogger-${view.day || stamp()}.csv`, new Blob([buildCsv(v)], {type:"text/csv"})) : flash("書き出す記録がありません。"); };
+
+/* ---------- バックアップ（1つのzipに記録・写真・音声をまとめる）。PCや別のスマホで読み込める ---------- */
+const fileStamp = t => { const d = new Date(t); return d.getFullYear() + pad2(d.getMonth()+1) + pad2(d.getDate()) + "-" + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds()); };
+const audioExt = type => /mp4|aac|m4a/.test(type || "") ? "m4a" : /ogg/.test(type || "") ? "ogg" : "webm";
+async function exportZip(){
+  const pts = state.points.filter(p => !p.sample);
+  if(!pts.length) return flash("バックアップする記録がありません。");
+  banner("バックアップを作っています…");
+  try{
+    const zip = new JSZip(), out = [];
+    for(const p of pts){
+      const media = [];
+      for(const m of (p.media || [])){
+        let blob = null; try{ blob = await mediaGet(m.k); }catch(e){}
+        if(!blob) continue;
+        const file = (m.kind === "photo" ? "photos/" : "audio/") + fileStamp(m.t) + "_" + m.k + "." + (m.kind === "photo" ? "jpg" : audioExt(blob.type));
+        zip.file(file, blob); media.push({k:m.k, kind:m.kind, t:m.t, file, type:blob.type});
+      }
+      out.push({...p, media});
+    }
+    zip.file("data.json", JSON.stringify({app:APP, format:1, exported:new Date().toISOString(), points:out}));
+    zip.file("track.gpx", buildGpx(pts));
+    zip.file("records.csv", buildCsv(pts));
+    zip.file("README.txt", APP + " のバックアップです。\r\nアプリの「バックアップを読み込む」でこのzipを選ぶと、PCや別のスマホで記録・写真・音声を見られます。\r\nphotos と audio の中身は、そのまま写真・音声ファイルとして開けます。\r\n");
+    const blob = await zip.generateAsync({type:"blob", compression:"STORE"});
+    banner("");
+    await saveOut(`mask-gpslogger-backup-${fileStamp(Date.now())}.zip`, blob);
+  }catch(e){ banner("バックアップを作れませんでした。端末の空き容量を確認してください。"); }
+}
+async function importZip(file){
+  banner("読み込んでいます…");
+  try{
+    const zip = await JSZip.loadAsync(file), entry = zip.file("data.json");
+    if(!entry) throw new Error("no data");
+    const data = JSON.parse(await entry.async("string"));
+    if(!data || !Array.isArray(data.points)) throw new Error("bad data");
+    state.points = state.points.filter(p => !p.sample);
+    const usedKeys = new Set(state.points.flatMap(p => (p.media || []).map(m => m.k)));
+    let added = 0, mediaAdded = 0;
+    for(const raw of data.points){
+      const lat = Number(raw.lat), lon = Number(raw.lon), t = Number(raw.t);
+      if(!isFinite(lat) || !isFinite(lon) || !isFinite(t) || Math.abs(lat) > 90 || Math.abs(lon) > 180) continue;
+      let p = state.points.find(q => q.t === t && q.lat === lat && q.lon === lon);
+      if(!p){
+        const num = v => (v == null || !isFinite(Number(v))) ? null : Number(v);
+        const w = raw.wx && typeof raw.wx === "object" ? {temp:num(raw.wx.temp), hum:num(raw.wx.hum), code:num(raw.wx.code), wind:num(raw.wx.wind), dir:num(raw.wx.dir), gust:num(raw.wx.gust), pres:num(raw.wx.pres)} : null;
+        p = {id:++uid, t, lat, lon, alt:num(raw.alt), acc:num(raw.acc), spd:num(raw.spd), elev:num(raw.elev), wx:w,
+             note:String(raw.note || "").slice(0, 500), place:String(raw.place || "").slice(0, 100), manual:!!raw.manual, media:[]};
+        state.points.push(p); added++;
+      }
+      for(const m of (Array.isArray(raw.media) ? raw.media : [])){
+        const f = m && typeof m.file === "string" ? zip.file(m.file) : null;
+        if(!f || (p.media || []).some(x => x.k === m.k)) continue;
+        const kind = m.kind === "photo" ? "photo" : "audio";
+        const type = kind === "photo" ? "image/jpeg" : (/^audio\/[\w.+;= -]+$/.test(m.type || "") ? m.type : "audio/webm");
+        let k = String(m.k || ""); if(!/^m\d+$/.test(k) || usedKeys.has(k)) k = "m" + (++uid);
+        await mediaPut(k, new Blob([await f.async("arraybuffer")], {type}));
+        usedKeys.add(k); (p.media = p.media || []).push({k, kind, t:Number(m.t) || t}); mediaAdded++;
+      }
+    }
+    state.points.sort((a, b) => a.t - b.t);
+    for(const p of state.points) if(p.place) placeCache.set(placeKey(p), p.place);
+    save(); view.day = ""; view.place = ""; view.media = false; selected = null;
+    drawAll(true);
+    flash(`${added}地点、写真・音声${mediaAdded}件を読み込みました。`, 6000);
+    backfill();
+  }catch(e){ banner("読み込めませんでした。このアプリで作ったバックアップ（zip）を選んでください。"); }
+}
+$("xZip").onclick = exportZip;
+$("xLoad").onclick = () => $("zipIn").click();
+$("zipIn").addEventListener("change", e => { const f = e.target.files && e.target.files[0]; e.target.value = ""; if(f) importZip(f); });
+$("xClear").onclick = e => {
+  const b = e.currentTarget;
+  if(b.dataset.arm){ mediaClear(); state.points = []; selected = null; save(); banner(""); drawAll(false); delete b.dataset.arm; b.textContent = "全部消す"; }
+  else { b.dataset.arm = "1"; b.textContent = "もう一度押すと消えます"; setTimeout(() => { delete b.dataset.arm; b.textContent = "全部消す"; }, 4000); }
+};
+$("xSample").onclick = () => {
+  if(state.points.length && !state.points.every(p => p.sample)) return flash("記録が残っているのでサンプルは表示しません。先に書き出すか消してください。", 6000);
+  const t0 = Date.now() - 100 * 60000;
+  const raw = [[35.63236,139.26990,201,"清滝駅前（サンプル）",12.1,1.8,340,1],[35.63010,139.26480,290,"",11.6,2.1,335,1],[35.62870,139.25960,400,"",10.9,2.6,330,2],
+               [35.62790,139.25420,470,"薬王院（サンプル）",10.2,3.0,325,2],[35.62640,139.24960,540,"",9.6,3.4,320,2],[35.62510,139.24360,599,"高尾山 山頂（サンプル）",9.1,4.2,315,3]];
+  state.points = raw.map((r, i) => ({id:++uid, t:t0 + i * 20 * 60000, lat:r[0], lon:r[1], alt:r[2] + 6, acc:8, spd:1, elev:r[2], note:r[3], manual:!!r[3], sample:true, place:"東京都 八王子市",
+    wx:{temp:r[4], hum:58 + i, code:r[7], wind:r[5], dir:r[6], gust:r[5] * 1.8, pres:1002 - i * 9}}));
+  selected = null; view.day = ""; view.place = ""; view.media = false;
+  banner("サンプルを表示しています。記録を始めると自動で消えます。");
+  drawAll(true);
+};
+
+/* ---------- 起動 ---------- */
+for(const p of state.points) if(p.place) placeCache.set(placeKey(p), p.place);
+loadSettings();
+drawAll(true);
+if(state.points.length && state.points.every(p => p.sample)) banner("サンプルを表示しています。記録を始めると自動で消えます。");
+window.addEventListener("resize", () => map.invalidateSize());
+$("envNote").textContent = NATIVE
+  ? "アプリ版：画面を消しても記録が続きます（通知が表示されます）。記録・写真・音声はこの端末の中に保存されます。PCで見るには「バックアップ」を書き出し、PCのブラウザでこのアプリを開いて「バックアップを読み込む」を押します。"
+  : "ブラウザ版：画面を消すと記録が止まります。記録・写真・音声はこの端末のブラウザの中に保存されます。スマホの記録を見るには「バックアップを読み込む」でスマホから書き出したzipを選びます。";
+if(!NATIVE && !window.isSecureContext) banner("このページは https で開かないと現在地・カメラ・マイクを使えません。地図や記録の閲覧はできます。");
+if(!NATIVE && "serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("sw.js").catch(() => {});
+if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+backfill();
+</script>
+</body>
+</html>

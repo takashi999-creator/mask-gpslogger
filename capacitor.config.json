@@ -1,0 +1,9 @@
+{
+  "appId": "com.mask.gpslogger",
+  "appName": "MASK.GPSLOGGER",
+  "webDir": "www",
+  "android": {
+    "useLegacyBridge": true,
+    "backgroundColor": "#16302b"
+  }
+}

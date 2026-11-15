@@ -1,0 +1,55 @@
+name: Androidアプリを作る
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: 部品を入れる
+        run: npm ci
+
+      - name: 画面をAndroidプロジェクトへ写す
+        run: npx cap sync android
+
+      - name: APKを作る
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: ファイル名を付ける
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk MASK-GPSLOGGER.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MASK-GPSLOGGER-apk
+          path: MASK-GPSLOGGER.apk
+
+      - name: スマホから直接ダウンロードできる場所に置く
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest MASK-GPSLOGGER.apk \
+            --title "MASK.GPSLOGGER (build ${{ github.run_number }})" \
+            --notes "スマホでこのページを開き、MASK-GPSLOGGER.apk をタップしてインストールします。"
