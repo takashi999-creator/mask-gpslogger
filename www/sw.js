@@ -1,5 +1,5 @@
 /* MASK.GPSLOGGER: 画面の部品を端末に保存して、圏外でも開けるようにする */
-const CACHE = "mask-gpslogger-v7";
+const CACHE = "mask-gpslogger-v8";
 const SHELL = ["./", "index.html", "manifest.webmanifest", "vendor/leaflet.js", "vendor/leaflet.css", "vendor/capacitor.js", "vendor/jszip.min.js",
   "vendor/images/layers.png", "vendor/images/layers-2x.png", "icons/icon-192.png", "icons/icon-512.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });

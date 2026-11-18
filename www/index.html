@@ -184,7 +184,14 @@ h2 span{font-family:var(--mono);letter-spacing:0}
       <label class="check wide"><input id="sMarkCam" type="checkbox">「今ここを記録」でカメラを開く</label>
       <label class="check wide"><input id="sStamp" type="checkbox">写真に日時・位置・標高・天気を書き込む</label>
       <label class="check wide"><input id="sAutoAudio" type="checkbox">自動記録のたびに、その場の音も録る</label>
-      <label>音を録る長さ（秒）<input id="sAudioSec" type="number" min="2" max="60" step="1" inputmode="numeric"></label>
+      <label>自動で録る長さ（秒）<input id="sAudioSec" type="number" min="2" max="300" step="1" inputmode="numeric"></label>
+      <label>「音声を録る」の長さ
+        <select id="sManualSec">
+          <option value="10">10秒</option><option value="30">30秒</option><option value="60">1分</option>
+          <option value="180">3分</option><option value="300">5分</option><option value="600">10分</option><option value="1800">30分</option>
+        </select>
+      </label>
+      <p class="note wide">「音声を録る」はもう一度押せば途中で止まります。WAVで保存するので、1分あたり約2.6MB使います。</p>
       <div class="row wide">
         <button class="btn small" id="xGpx">GPXで書き出す</button>
         <button class="btn small" id="xCsv">CSVで書き出す</button>
@@ -223,7 +230,7 @@ h2 span{font-family:var(--mono);letter-spacing:0}
 const APP = "MASK.GPSLOGGER";
 const $ = id => document.getElementById(id);
 const KEY = "tabilog.v1";
-const DEF = {interval:60, dist:50, mode:"or", maxAcc:50, wxMin:10, enrich:true, wake:true, autoAudio:false, audioSec:5, markCam:true, stamp:true};
+const DEF = {interval:60, dist:50, mode:"or", maxAcc:50, wxMin:10, enrich:true, wake:true, autoAudio:false, audioSec:5, manualSec:60, markCam:true, stamp:true};
 let state = {points:[], settings:{...DEF}};
 try{
   const s = JSON.parse(localStorage.getItem(KEY) || "null");
@@ -378,23 +385,34 @@ function audioCtx(){
   }catch(e){ sharedCtx = null; }
   return sharedCtx;
 }
-function encodeWav(chunks, inRate, outRate){
-  let total = 0; for(const c of chunks) total += c.length;
-  const all = new Float32Array(total); let o = 0; for(const c of chunks){ all.set(c, o); o += c.length; }
-  const ratio = inRate / outRate, n = Math.floor(total / ratio);
-  const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
-  const str = (off, t) => { for(let i = 0; i < t.length; i++) v.setUint8(off + i, t.charCodeAt(i)); };
-  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, outRate, true); v.setUint32(28, outRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str(36, "data"); v.setUint32(40, n * 2, true);
-  for(let i = 0; i < n; i++){
-    const start = Math.floor(i * ratio), end = Math.min(total, Math.floor((i + 1) * ratio));
-    let sum = 0, cnt = 0; for(let j = start; j < end; j++){ sum += all[j]; cnt++; }
-    const x = Math.max(-1, Math.min(1, cnt ? sum / cnt : 0));
-    v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
-  }
-  return {blob:new Blob([buf], {type:"audio/wav"}), secs:n / outRate};
+/* 録りながら22kHzの16ビットに間引いて持つ。長時間でもメモリを食わない */
+function makeSink(inRate, outRate){
+  const ratio = inRate / outRate, parts = [];
+  let cur = new Int16Array(outRate), ci = 0, outIdx = 0, inIdx = 0, sum = 0, cnt = 0, next = Math.floor(ratio);
+  return {
+    push(d){
+      for(let i = 0; i < d.length; i++){
+        sum += d[i]; cnt++; inIdx++;
+        if(inIdx >= next){
+          const x = Math.max(-1, Math.min(1, sum / cnt));
+          cur[ci++] = x < 0 ? x * 0x8000 : x * 0x7fff;
+          if(ci === cur.length){ parts.push(cur); cur = new Int16Array(outRate); ci = 0; }
+          outIdx++; sum = 0; cnt = 0; next = Math.floor((outIdx + 1) * ratio);
+        }
+      }
+    },
+    get samples(){ return outIdx; },
+    wav(){
+      const all = parts.concat(ci ? [cur.slice(0, ci)] : []), n = outIdx;
+      const h = new DataView(new ArrayBuffer(44));
+      const str = (off, t) => { for(let i = 0; i < t.length; i++) h.setUint8(off + i, t.charCodeAt(i)); };
+      str(0, "RIFF"); h.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+      h.setUint32(16, 16, true); h.setUint16(20, 1, true); h.setUint16(22, 1, true);
+      h.setUint32(24, outRate, true); h.setUint32(28, outRate * 2, true); h.setUint16(32, 2, true); h.setUint16(34, 16, true);
+      str(36, "data"); h.setUint32(40, n * 2, true);
+      return {blob:new Blob([h.buffer, ...all], {type:"audio/wav"}), secs:n / outRate};
+    }
+  };
 }
 let recTick = null, recStarting = false;
 function micError(e){
@@ -423,25 +441,26 @@ async function recordAudio(p, seconds, quiet){
     if(!quiet) banner("録音の準備ができませんでした。もう一度「音声を録る」を押してください。");
     return;
   }
-  const src = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1), chunks = [];
+  const src = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1);
+  const sink = makeSink(ctx.sampleRate, Math.min(22050, ctx.sampleRate));
   let level = 0, peak = 0, done = false;
   proc.onaudioprocess = e => {
     if(done) return;
     const d = e.inputBuffer.getChannelData(0);
-    chunks.push(new Float32Array(d));
+    sink.push(d);
     let sum = 0; for(let i = 0; i < d.length; i++) sum += d[i] * d[i];
     level = Math.sqrt(sum / d.length); peak = Math.max(peak, level);
   };
   src.connect(proc); proc.connect(ctx.destination);   // 出力は無音。処理を動かすためだけにつなぐ
-  const t0 = Date.now(), rate = ctx.sampleRate;
+  const t0 = Date.now();
   const finish = async () => {
     if(done) return; done = true;
     clearInterval(recTick); recTick = null; clearTimeout(timer);
     try{ src.disconnect(); proc.disconnect(); }catch(e){}
     stream.getTracks().forEach(t => t.stop());
     recorder = null; recFor = null;
-    if(!chunks.length){ banner("音が録れていませんでした。もう一度試してください。"); if(selected === p.id) drawSheet(); return; }
-    const {blob, secs} = encodeWav(chunks, rate, Math.min(22050, rate));
+    if(!sink.samples){ banner("音が録れていませんでした。もう一度試してください。"); if(selected === p.id) drawSheet(); return; }
+    const {blob, secs} = sink.wav();
     const s2 = Math.max(1, Math.round(secs));
     await attach(p, "audio", blob, s2);
     if(peak < 0.003) banner(`音声を保存しました（${s2}秒）が、ほとんど音が入っていませんでした。マイクの穴をふさいでいないか、ほかのアプリがマイクを使っていないか確認してください。`);
@@ -449,10 +468,10 @@ async function recordAudio(p, seconds, quiet){
   };
   recorder = {stop:finish, state:"recording"}; recFor = p.id;
   stream.getTracks().forEach(t => t.addEventListener("ended", () => { if(!done){ finish(); } }));
-  const left = () => Math.max(0, seconds - Math.floor((Date.now() - t0) / 1000));
+  const left = () => mmss(Math.max(0, seconds - Math.floor((Date.now() - t0) / 1000)));
   const bars = () => { const n = Math.min(8, Math.round(Math.sqrt(level) * 18)); return "▮".repeat(n) + "▯".repeat(8 - n); };
-  banner(`● 録音中…あと${left()}秒`);
-  recTick = setInterval(() => banner(`● 録音中…あと${left()}秒　音量 ${bars()}`), 200);
+  banner(`● 録音中…残り ${left()}`);
+  recTick = setInterval(() => banner(`● 録音中…残り ${left()}　音量 ${bars()}　（もう一度押すと止まります）`), 200);
   const timer = setTimeout(finish, seconds * 1000);
   if(selected === p.id) drawSheet();
 }
@@ -472,6 +491,7 @@ async function drawMedia(p){
   if($("mediaBox") === box && selected === p.id) box.innerHTML = parts.join("");
   old.forEach(u => URL.revokeObjectURL(u));
 }
+const durLabel = sec => sec < 60 ? sec + "秒" : (sec % 60 ? Math.floor(sec / 60) + "分" + (sec % 60) + "秒" : (sec / 60) + "分");
 const mmss = sec => Math.floor(sec / 60) + ":" + String(Math.floor(sec % 60)).padStart(2, "0");
 /* 録音ファイルは長さの情報を持たないことが多いので、長さは記録した秒数を使う */
 function audioDur(a, box){
@@ -653,7 +673,7 @@ function drawSheet(){
     <input type="text" id="noteIn" placeholder="メモ（例：山頂、昼ごはん）" value="${esc(p.note || "")}">
     <div class="row" style="margin-bottom:8px">
       <button class="btn small" data-act="photo">写真を付ける</button>
-      <button class="btn small${recFor === p.id ? " live" : ""}" data-act="audio">${recFor === p.id ? "録音を止める" : "音声を録る"}</button>
+      <button class="btn small${recFor === p.id ? " live" : ""}" data-act="audio">${recFor === p.id ? "録音を止める" : "音声を録る（最長" + durLabel(state.settings.manualSec) + "）"}</button>
     </div>
     <div class="row">
       <button class="btn small" data-act="birds">この辺りの野鳥</button>
@@ -944,7 +964,7 @@ $("sheetHost").addEventListener("click", async e => {
   if(act === "spots") showSpots(p);
   if(act === "rewx"){ $("result").textContent = "天気を取得しています…"; const ok = await enrich(p, true); const r = $("result"); if(r && selected === p.id) r.textContent = ok ? "" : "取得できませんでした。通信状態を確認してください。"; }
   if(act === "photo"){ shot = null; $("photoIn").click(); }
-  if(act === "audio"){ if(!recorder) audioCtx(); if(recorder){ if(recFor === p.id){ banner(""); recorder.stop(); } else flash("別の地点で録音中です。終わってから押してください。"); } else recordAudio(p, 60, false); }
+  if(act === "audio"){ if(!recorder) audioCtx(); if(recorder){ if(recFor === p.id){ banner(""); recorder.stop(); } else flash("別の地点で録音中です。終わってから押してください。"); } else recordAudio(p, state.settings.manualSec, false); }
   if(act === "play"){ playAudio(e.target.dataset.k); return; }
   if(act === "zoom"){ $("viewer").firstElementChild.src = e.target.src; $("viewer").classList.add("show"); }
   if(act === "msave"){ const m = (p.media || []).find(x => x.k === e.target.dataset.k); if(!m) return;
@@ -988,7 +1008,7 @@ function loadSettings(){
   $("sInterval").value = s.interval; $("sDist").value = s.dist; $("sMode").value = s.mode;
   $("sAcc").value = s.maxAcc; $("sWx").value = s.wxMin; $("sEnrich").checked = s.enrich; $("sWake").checked = s.wake;
   $("sMarkCam").checked = s.markCam; $("sStamp").checked = s.stamp;
-  $("sAutoAudio").checked = s.autoAudio; $("sAudioSec").value = s.audioSec;
+  $("sAutoAudio").checked = s.autoAudio; $("sAudioSec").value = s.audioSec; $("sManualSec").value = String(s.manualSec);
 }
 $("settings").addEventListener("change", () => {
   const s = state.settings, n = (id, d, min) => Math.max(min, parseFloat($(id).value) || d);
@@ -996,8 +1016,10 @@ $("settings").addEventListener("change", () => {
   s.maxAcc = n("sAcc", DEF.maxAcc, 5); s.wxMin = n("sWx", DEF.wxMin, 1);
   s.enrich = $("sEnrich").checked; s.wake = $("sWake").checked;
   s.markCam = $("sMarkCam").checked; s.stamp = $("sStamp").checked;
-  s.autoAudio = $("sAutoAudio").checked; s.audioSec = Math.min(60, n("sAudioSec", DEF.audioSec, 2));
+  s.autoAudio = $("sAutoAudio").checked; s.audioSec = Math.min(300, n("sAudioSec", DEF.audioSec, 2));
+  s.manualSec = Math.min(1800, Math.max(5, parseInt($("sManualSec").value, 10) || DEF.manualSec));
   save(); loadSettings();
+  if(selected != null && !recorder) drawSheet();
 });
 
 /* ---------- 書き出し ---------- */
