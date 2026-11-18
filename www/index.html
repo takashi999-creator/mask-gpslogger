@@ -368,12 +368,33 @@ async function makePhoto(file, p, doStamp){
     return await new Promise(res => c.toBlob(bl => res(bl || file), "image/jpeg", .88));
   }catch(e){ return file; }
 }
-/* 録音。どの端末でも再生しやすいAAC(m4a)を優先し、だめならwebmで録る */
-function pickAudioType(){
-  if(!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
-  for(const t of ["audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"])
-    if(MediaRecorder.isTypeSupported(t)) return t;
-  return "";
+/* 録音は音の波形を直接受け取り、WAVファイルを自分で作る。
+   端末の録音形式や再生機能のくせ（長さ0秒・最初の1秒だけ再生される等）に左右されない */
+let sharedCtx = null;
+function audioCtx(){
+  try{
+    if(!sharedCtx || sharedCtx.state === "closed") sharedCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(sharedCtx.state === "suspended") sharedCtx.resume().catch(() => {});
+  }catch(e){ sharedCtx = null; }
+  return sharedCtx;
+}
+function encodeWav(chunks, inRate, outRate){
+  let total = 0; for(const c of chunks) total += c.length;
+  const all = new Float32Array(total); let o = 0; for(const c of chunks){ all.set(c, o); o += c.length; }
+  const ratio = inRate / outRate, n = Math.floor(total / ratio);
+  const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (off, t) => { for(let i = 0; i < t.length; i++) v.setUint8(off + i, t.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, outRate, true); v.setUint32(28, outRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, n * 2, true);
+  for(let i = 0; i < n; i++){
+    const start = Math.floor(i * ratio), end = Math.min(total, Math.floor((i + 1) * ratio));
+    let sum = 0, cnt = 0; for(let j = start; j < end; j++){ sum += all[j]; cnt++; }
+    const x = Math.max(-1, Math.min(1, cnt ? sum / cnt : 0));
+    v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+  }
+  return {blob:new Blob([buf], {type:"audio/wav"}), secs:n / outRate};
 }
 let recTick = null, recStarting = false;
 function micError(e){
@@ -385,7 +406,9 @@ function micError(e){
 }
 async function recordAudio(p, seconds, quiet){
   if(recorder || recStarting) return;
-  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder){ if(!quiet) banner("この環境は録音に対応していません。"); return; }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ if(!quiet) banner("この環境は録音に対応していません。"); return; }
+  const ctx = audioCtx();   // 押した瞬間に用意しておく（ブラウザの決まりで、後からだと音を受け取れないことがある）
+  if(!ctx){ if(!quiet) banner("この環境は録音に対応していません。"); return; }
   recStarting = true;
   let stream;
   try{ stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:true}}); }
@@ -393,50 +416,44 @@ async function recordAudio(p, seconds, quiet){
     try{ stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
     catch(e2){ recStarting = false; if(!quiet) banner(micError(e2)); else flash("自動録音：" + micError(e2), 6000); return; }
   }
+  if(ctx.state !== "running"){ try{ await Promise.race([ctx.resume(), sleep(800)]); }catch(e){} }
   recStarting = false;
-  const type = pickAudioType(), chunks = [];
-  let rec;
-  try{ rec = type ? new MediaRecorder(stream, {mimeType:type}) : new MediaRecorder(stream); }
-  catch(e){ try{ rec = new MediaRecorder(stream); }catch(e2){ stream.getTracks().forEach(t => t.stop()); banner("録音を始められませんでした（" + e2.name + "）。"); return; } }
-  recorder = rec; recFor = p.id;
-  const t0 = Date.now();
-  /* 音量メーター。本当に音が入っているかを録音中に見せる */
-  let actx = null, peak = 0, level = 0;
-  try{
-    actx = new (window.AudioContext || window.webkitAudioContext)();
-    if(actx.state === "suspended") actx.resume().catch(() => {});
-    const an = actx.createAnalyser(); an.fftSize = 1024;
-    actx.createMediaStreamSource(stream).connect(an);
-    const buf = new Float32Array(an.fftSize);
-    var meter = setInterval(() => {
-      an.getFloatTimeDomainData(buf);
-      let sum = 0; for(const v of buf) sum += v * v;
-      level = Math.sqrt(sum / buf.length); peak = Math.max(peak, level);
-    }, 100);
-  }catch(e){ actx = null; }
-  const bars = () => { const n = Math.min(8, Math.round(Math.sqrt(level) * 18)); return "▮".repeat(n) + "▯".repeat(8 - n); };
-  rec.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
-  rec.onerror = e => banner("録音中にエラーが起きました（" + ((e.error && e.error.name) || "不明") + "）。");
-  rec.onstop = async () => {
+  if(ctx.state !== "running"){
     stream.getTracks().forEach(t => t.stop());
-    clearInterval(recTick); recTick = null;
-    if(typeof meter !== "undefined") clearInterval(meter);
-    const heard = actx && actx.state === "running" ? peak : null;
-    if(actx) actx.close().catch(() => {});
-    recorder = null; recFor = null;
-    const secs = Math.max(1, Math.round((Date.now() - t0) / 1000));
-    const blob = new Blob(chunks, {type:(rec.mimeType || type || "audio/webm").split(";")[0]});
-    if(!blob.size){ banner("音が録れていませんでした。もう一度試してください。"); if(selected === p.id) drawSheet(); return; }
-    await attach(p, "audio", blob, secs);
-    if(heard !== null && heard < 0.004) banner(`音声を保存しました（${secs}秒）が、ほとんど音が入っていませんでした。マイクの穴を指でふさいでいないか、ほかのアプリがマイクを使っていないか確認してください。`);
-    else flash(`音声を保存しました（${secs}秒）。`);
+    if(!quiet) banner("録音の準備ができませんでした。もう一度「音声を録る」を押してください。");
+    return;
+  }
+  const src = ctx.createMediaStreamSource(stream), proc = ctx.createScriptProcessor(4096, 1, 1), chunks = [];
+  let level = 0, peak = 0, done = false;
+  proc.onaudioprocess = e => {
+    if(done) return;
+    const d = e.inputBuffer.getChannelData(0);
+    chunks.push(new Float32Array(d));
+    let sum = 0; for(let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    level = Math.sqrt(sum / d.length); peak = Math.max(peak, level);
   };
-  try{ rec.start(1000); }
-  catch(e){ stream.getTracks().forEach(t => t.stop()); recorder = null; recFor = null; banner("録音を始められませんでした（" + e.name + "）。"); return; }
+  src.connect(proc); proc.connect(ctx.destination);   // 出力は無音。処理を動かすためだけにつなぐ
+  const t0 = Date.now(), rate = ctx.sampleRate;
+  const finish = async () => {
+    if(done) return; done = true;
+    clearInterval(recTick); recTick = null; clearTimeout(timer);
+    try{ src.disconnect(); proc.disconnect(); }catch(e){}
+    stream.getTracks().forEach(t => t.stop());
+    recorder = null; recFor = null;
+    if(!chunks.length){ banner("音が録れていませんでした。もう一度試してください。"); if(selected === p.id) drawSheet(); return; }
+    const {blob, secs} = encodeWav(chunks, rate, Math.min(22050, rate));
+    const s2 = Math.max(1, Math.round(secs));
+    await attach(p, "audio", blob, s2);
+    if(peak < 0.003) banner(`音声を保存しました（${s2}秒）が、ほとんど音が入っていませんでした。マイクの穴をふさいでいないか、ほかのアプリがマイクを使っていないか確認してください。`);
+    else flash(`音声を保存しました（${s2}秒）。`);
+  };
+  recorder = {stop:finish, state:"recording"}; recFor = p.id;
+  stream.getTracks().forEach(t => t.addEventListener("ended", () => { if(!done){ finish(); } }));
   const left = () => Math.max(0, seconds - Math.floor((Date.now() - t0) / 1000));
+  const bars = () => { const n = Math.min(8, Math.round(Math.sqrt(level) * 18)); return "▮".repeat(n) + "▯".repeat(8 - n); };
   banner(`● 録音中…あと${left()}秒`);
-  recTick = setInterval(() => { if(recorder === rec) banner(`● 録音中…あと${left()}秒　音量 ${actx ? bars() : ""}`); }, 200);
-  setTimeout(() => { if(rec.state !== "inactive") rec.stop(); }, seconds * 1000);
+  recTick = setInterval(() => banner(`● 録音中…あと${left()}秒　音量 ${bars()}`), 200);
+  const timer = setTimeout(finish, seconds * 1000);
   if(selected === p.id) drawSheet();
 }
 async function drawMedia(p){
@@ -927,12 +944,12 @@ $("sheetHost").addEventListener("click", async e => {
   if(act === "spots") showSpots(p);
   if(act === "rewx"){ $("result").textContent = "天気を取得しています…"; const ok = await enrich(p, true); const r = $("result"); if(r && selected === p.id) r.textContent = ok ? "" : "取得できませんでした。通信状態を確認してください。"; }
   if(act === "photo"){ shot = null; $("photoIn").click(); }
-  if(act === "audio"){ if(recorder){ if(recFor === p.id){ banner(""); recorder.stop(); } else flash("別の地点で録音中です。終わってから押してください。"); } else recordAudio(p, 60, false); }
+  if(act === "audio"){ if(!recorder) audioCtx(); if(recorder){ if(recFor === p.id){ banner(""); recorder.stop(); } else flash("別の地点で録音中です。終わってから押してください。"); } else recordAudio(p, 60, false); }
   if(act === "play"){ playAudio(e.target.dataset.k); return; }
   if(act === "zoom"){ $("viewer").firstElementChild.src = e.target.src; $("viewer").classList.add("show"); }
   if(act === "msave"){ const m = (p.media || []).find(x => x.k === e.target.dataset.k); if(!m) return;
     const blob = await mediaGet(m.k); if(!blob) return;
-    const ext = m.kind === "photo" ? "jpg" : (/mp4|aac/.test(blob.type) ? "m4a" : /ogg/.test(blob.type) ? "ogg" : "webm");
+    const ext = m.kind === "photo" ? "jpg" : audioExt(blob.type);
     const d = new Date(m.t), ts = d.getFullYear() + String(d.getMonth()+1).padStart(2,"0") + String(d.getDate()).padStart(2,"0") + "-" + String(d.getHours()).padStart(2,"0") + String(d.getMinutes()).padStart(2,"0") + String(d.getSeconds()).padStart(2,"0");
     saveOut(`mask-gpslogger-${ts}.${ext}`, blob); }
   if(act === "mdel"){ const k = e.target.dataset.k; p.media = (p.media || []).filter(m => m.k !== k); mediaDel(k); save(); drawMap(false); drawList(); drawSheet(); }
@@ -1007,7 +1024,7 @@ $("xCsv").onclick = () => { const v = visible(); v.length ? saveOut(`mask-gpslog
 
 /* ---------- バックアップ（1つのzipに記録・写真・音声をまとめる）。PCや別のスマホで読み込める ---------- */
 const fileStamp = t => { const d = new Date(t); return d.getFullYear() + pad2(d.getMonth()+1) + pad2(d.getDate()) + "-" + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds()); };
-const audioExt = type => /mp4|aac|m4a/.test(type || "") ? "m4a" : /ogg/.test(type || "") ? "ogg" : "webm";
+function audioExt(type){ return /wav/.test(type || "") ? "wav" : /mp4|aac|m4a/.test(type || "") ? "m4a" : /ogg/.test(type || "") ? "ogg" : "webm"; }
 async function exportZip(){
   const pts = state.points.filter(p => !p.sample);
   if(!pts.length) return flash("バックアップする記録がありません。");
