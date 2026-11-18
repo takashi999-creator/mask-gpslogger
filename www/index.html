@@ -317,11 +317,11 @@ const mediaPut = (k, blob) => idb("readwrite", s => s.put(blob, k));
 const mediaGet = k => idb("readonly", s => s.get(k));
 const mediaDel = k => idb("readwrite", s => s.delete(k)).catch(() => {});
 const mediaClear = () => idb("readwrite", s => s.clear()).catch(() => {});
-async function attach(p, kind, blob){
+async function attach(p, kind, blob, secs){
   const k = "m" + (++uid);
   try{ await mediaPut(k, blob); }
   catch(e){ flash("保存できませんでした。端末の空き容量を確認してください。"); return; }
-  (p.media = p.media || []).push({k, kind, t:Date.now()});
+  (p.media = p.media || []).push(secs ? {k, kind, t:Date.now(), secs} : {k, kind, t:Date.now()});
   save(); drawMap(false); drawList(); drawGallery(); if(selected === p.id) drawSheet();
 }
 function stampLines(p){
@@ -363,22 +363,55 @@ async function makePhoto(file, p, doStamp){
     return await new Promise(res => c.toBlob(bl => res(bl || file), "image/jpeg", .88));
   }catch(e){ return file; }
 }
+/* 録音。どの端末でも再生しやすいAAC(m4a)を優先し、だめならwebmで録る */
+function pickAudioType(){
+  if(!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+  for(const t of ["audio/mp4;codecs=mp4a.40.2", "audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"])
+    if(MediaRecorder.isTypeSupported(t)) return t;
+  return "";
+}
+let recTick = null, recStarting = false;
+function micError(e){
+  const n = e && e.name;
+  return n === "NotAllowedError" || n === "SecurityError" ? "マイクが許可されていません。スマホの設定 → アプリ → MASK.GPSLOGGER → 権限 で「マイク」を許可してください。"
+       : n === "NotFoundError" ? "マイクが見つかりませんでした。"
+       : n === "NotReadableError" ? "マイクを使えませんでした。通話中や、別のアプリが録音中でないか確認してください。"
+       : "録音を始められませんでした（" + (n || "不明なエラー") + "）。";
+}
 async function recordAudio(p, seconds, quiet){
-  if(recorder) return;
-  if(!navigator.mediaDevices || !window.MediaRecorder){ if(!quiet) flash("この環境は録音に対応していません。"); return; }
+  if(recorder || recStarting) return;
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder){ if(!quiet) banner("この環境は録音に対応していません。"); return; }
+  recStarting = true;
   let stream;
-  try{ stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
-  catch(e){ if(!quiet) flash("マイクが許可されていません。設定でマイクを許可してください。"); return; }
-  const chunks = [], rec = new MediaRecorder(stream);
+  try{ stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:true}}); }
+  catch(e){
+    try{ stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
+    catch(e2){ recStarting = false; if(!quiet) banner(micError(e2)); else flash("自動録音：" + micError(e2), 6000); return; }
+  }
+  recStarting = false;
+  const type = pickAudioType(), chunks = [];
+  let rec;
+  try{ rec = type ? new MediaRecorder(stream, {mimeType:type}) : new MediaRecorder(stream); }
+  catch(e){ try{ rec = new MediaRecorder(stream); }catch(e2){ stream.getTracks().forEach(t => t.stop()); banner("録音を始められませんでした（" + e2.name + "）。"); return; } }
   recorder = rec; recFor = p.id;
+  const t0 = Date.now();
   rec.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
-  rec.onstop = () => {
+  rec.onerror = e => banner("録音中にエラーが起きました（" + ((e.error && e.error.name) || "不明") + "）。");
+  rec.onstop = async () => {
     stream.getTracks().forEach(t => t.stop());
+    clearInterval(recTick); recTick = null;
     recorder = null; recFor = null;
-    if(chunks.length) attach(p, "audio", new Blob(chunks, {type:rec.mimeType || "audio/webm"}));
-    else if(selected === p.id) drawSheet();
+    const secs = Math.round((Date.now() - t0) / 1000);
+    const blob = new Blob(chunks, {type:(rec.mimeType || type || "audio/webm").split(";")[0]});
+    if(!blob.size){ banner("音が録れていませんでした。もう一度試してください。"); if(selected === p.id) drawSheet(); return; }
+    await attach(p, "audio", blob, secs);
+    flash(`音声を保存しました（${secs}秒）。`);
   };
-  rec.start();
+  try{ rec.start(1000); }
+  catch(e){ stream.getTracks().forEach(t => t.stop()); recorder = null; recFor = null; banner("録音を始められませんでした（" + e.name + "）。"); return; }
+  const left = () => Math.max(0, seconds - Math.floor((Date.now() - t0) / 1000));
+  banner(`● 録音中…あと${left()}秒`);
+  recTick = setInterval(() => { if(recorder === rec) banner(`● 録音中…あと${left()}秒`); }, 500);
   setTimeout(() => { if(rec.state !== "inactive") rec.stop(); }, seconds * 1000);
   if(selected === p.id) drawSheet();
 }
@@ -391,7 +424,7 @@ async function drawMedia(p){
     if(!blob) continue;
     const u = URL.createObjectURL(blob); urls.push(u);
     parts.push(`<figure>${m.kind === "photo" ? `<img src="${u}" alt="この地点の写真" data-act="zoom">` : `<audio controls preload="metadata" src="${u}"></audio>`}
-      <figcaption><span>${hm(m.t)} ${m.kind === "photo" ? "写真" : "音声"}</span><button data-act="msave" data-k="${m.k}">保存</button></figcaption>
+      <figcaption><span>${hm(m.t)} ${m.kind === "photo" ? "写真" : "音声" + (m.secs ? " " + m.secs + "秒" : "")}</span><button data-act="msave" data-k="${m.k}">保存</button></figcaption>
       <button class="x" data-act="mdel" data-k="${m.k}" aria-label="これを消す">×</button></figure>`);
   }
   if($("mediaBox") === box && selected === p.id) box.innerHTML = parts.join("");
@@ -846,7 +879,7 @@ $("sheetHost").addEventListener("click", async e => {
   if(act === "spots") showSpots(p);
   if(act === "rewx"){ $("result").textContent = "天気を取得しています…"; const ok = await enrich(p, true); const r = $("result"); if(r && selected === p.id) r.textContent = ok ? "" : "取得できませんでした。通信状態を確認してください。"; }
   if(act === "photo"){ shot = null; $("photoIn").click(); }
-  if(act === "audio"){ if(recorder){ if(recFor === p.id) recorder.stop(); else flash("別の地点で録音中です。終わってから押してください。"); } else recordAudio(p, 60, false); }
+  if(act === "audio"){ if(recorder){ if(recFor === p.id){ banner(""); recorder.stop(); } else flash("別の地点で録音中です。終わってから押してください。"); } else recordAudio(p, 60, false); }
   if(act === "zoom"){ $("viewer").firstElementChild.src = e.target.src; $("viewer").classList.add("show"); }
   if(act === "msave"){ const m = (p.media || []).find(x => x.k === e.target.dataset.k); if(!m) return;
     const blob = await mediaGet(m.k); if(!blob) return;
@@ -938,7 +971,7 @@ async function exportZip(){
         let blob = null; try{ blob = await mediaGet(m.k); }catch(e){}
         if(!blob) continue;
         const file = (m.kind === "photo" ? "photos/" : "audio/") + fileStamp(m.t) + "_" + m.k + "." + (m.kind === "photo" ? "jpg" : audioExt(blob.type));
-        zip.file(file, blob); media.push({k:m.k, kind:m.kind, t:m.t, file, type:blob.type});
+        zip.file(file, blob); media.push({k:m.k, kind:m.kind, t:m.t, secs:m.secs, file, type:blob.type});
       }
       out.push({...p, media});
     }
@@ -979,7 +1012,7 @@ async function importZip(file){
         const type = kind === "photo" ? "image/jpeg" : (/^audio\/[\w.+;= -]+$/.test(m.type || "") ? m.type : "audio/webm");
         let k = String(m.k || ""); if(!/^m\d+$/.test(k) || usedKeys.has(k)) k = "m" + (++uid);
         await mediaPut(k, new Blob([await f.async("arraybuffer")], {type}));
-        usedKeys.add(k); (p.media = p.media || []).push({k, kind, t:Number(m.t) || t}); mediaAdded++;
+        usedKeys.add(k); (p.media = p.media || []).push({k, kind, t:Number(m.t) || t, secs:Number(m.secs) || undefined}); mediaAdded++;
       }
     }
     state.points.sort((a, b) => a.t - b.t);
